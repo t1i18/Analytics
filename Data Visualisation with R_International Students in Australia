@@ -1,0 +1,303 @@
+---
+title: "International Students in Australia"
+output:
+flexdashboard::flex_dashboard:
+orientation: rows
+---
+```{r setup, include=FALSE}
+library(ggplot2)
+library(plotly)
+library(flexdashboard)
+library(readxl)
+library(scales)
+library(tidyr)
+library(reshape2)
+library(CGPfunctions)
+# load data from wd
+setwd("/Users/momo/Documents/Master of Analytics/SEM1 2022/Data Visualization/DVA3
+data")
+#population data
+population <- read_excel("0_population_compare.xlsx")
+population <- population[-1, ]
+#field of study data
+field <- read_excel("4_field_of_study.xlsx")
+field <- melt(field, id.vars='Field')
+colnames(field) <- c('Field','Residency_status', 'Share_of_students')
+#incoming student data
+income <- read_excel("2_student_by_income.xlsx")
+#state data
+state <- read_excel("5_state.xlsx")
+state <- state[3,]
+state <- gather(state, key = "State", value = "Commencement")
+#commencement data
+Commencement <- read_excel("1_ts.xlsx")
+Commencement
+country_2021 <- subset(Commencement, Year == 2021, - c(Year,Total_Commencement))
+country_2021 <- gather(country_2021, country_name, commencement_number)
+#export data
+export_two <- read_excel("6_export.xlsx")
+export <- export_two[1:5,]
+export_two$Year <- as.factor(export_two$Year)
+#value data
+value <- read_excel("7_value.xlsx")
+```
+Demographics
+=======================================================================
+Row
+-----------------------------------------------------------------------
+### In 2022, 1.7% people living in Australia are international student, that is 1 in 59 people
+```{r}
+#population comparison
+p <- ggplot(population, aes(x=Name, y = Percentage)) +
+#plot bar chart for population comparison with label
+geom_col(aes(x=reorder(Name, Percentage),
+y = Percentage,
+fill = ifelse(Name=="International student", 'International' ,"Rest")),alpha=0.75) +
+scale_fill_manual(name="Colour of Bars",
+breaks=c('International','Rest'),
+values=c('International'='lightskyblue1','Rest'='dodgerblue4')) +
+#title and text adjustment
+ggtitle("Percentage of international students in
+Australia population in 2022") +
+theme(plot.title = element_text(hjust = 1, vjust=0)) +
+theme(plot.title = element_text(size = 13),
+axis.text = element_text(size = 10),
+axis.title = element_text(size= 10)) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+#x,y lab
+xlab("") +
+ylab("Percentage %")+
+#flip the plot to better read texts
+coord_flip() +
+#adjust background elements of plot
+theme_classic() + theme(panel.border = element_blank(), panel.grid.major =
+element_blank(),
+panel.grid.minor = element_blank())+
+theme(legend.position="none")
+ggplotly(p, tooltip = "Percentage")
+```
+### 83.88% of international students in Australia are from countries of middle-income level
+```{r}
+#incoming plot
+p<-ggplot(income, aes(x=Level, y = Percentage)) +
+#plot bar chart with label
+geom_col(aes(x=reorder(Level, Percentage), y = Percentage), fill= "dodgerblue2", alpha =
+0.75) +
+#title and text adjustment
+ggtitle("Income level of international student's
+country of origin in 2019") +
+theme(plot.title = element_text(hjust = 1, vjust=0)) +
+theme(plot.title = element_text(size = 13),
+axis.text = element_text(size = 10),
+axis.title = element_text(size= 10)) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+#x,y lab
+xlab("") +
+ylab("Percentage %")+
+#flip the plot to better read axis labels
+coord_flip() +
+#adjust background elements of plot
+theme_classic() + theme(panel.border = element_blank(), panel.grid.major =
+element_blank(),
+panel.grid.minor = element_blank()
+)
+ggplotly(p, tooltip = "Percentage")
+```
+Row {data-height=470}
+-----------------------------------------------------------------------
+### Business, Administration and Law is most popular among International students, twice
+the share of domestic students
+```{r}
+#field of study
+p <- ggplot(field, aes(x=Field, y = Share_of_students, fill=Residency_status)) +
+#plot bar chart with label
+geom_bar(stat='identity', position='dodge') +
+scale_fill_brewer(palette = "Paired")+
+#title and text adjustment
+ggtitle("Field of study for international students and domestic students in tertiary
+education in 2021") +
+theme(plot.title = element_text(hjust = 1, vjust=0)) +
+theme(plot.title = element_text(size = 13),
+axis.text = element_text(size = 10),
+axis.title = element_text(size= 10)) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+#x,y lab
+xlab("") +
+ylab("Share of students %")+
+#flip the plot to better read axis labels
+coord_flip() +
+#adjust background elements of plot
+theme_classic() + theme(panel.border = element_blank(), panel.grid.major =
+element_blank(),
+panel.grid.minor = element_blank()
+)
+ggplotly(p, tooltip = "Share_of_students")
+```
+Student Flow
+=======================================================================
+Row {data-height=350}
+-----------------------------------------------------------------------
+### International student commencement had increased from 2012, but dropped after
+2019 possibly due to the Covid-19 pandemic, see blue line for trend model
+```{r}
+p <- ggplot(Commencement, aes(x=Year, y=Total_Commencement, group=1)) +
+geom_line(size = 0.5) +
+geom_point(size = 0.8)+
+geom_smooth(formula = y ~ x, method = "lm", size = 0.4, colour = "dodgerblue3", se =
+FALSE)+
+#adding title and text
+ggtitle("Time series plot of international student commencement in Australia from 2012 to
+2021 (in millions)") +
+theme(plot.title = element_text(hjust = 1)) +
+theme(plot.title = element_text(size = 13),
+axis.text = element_text(size = 10),
+axis.title = element_text(size= 10)) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+#x,y lab and lim
+xlab("Year") +
+ylab("Number of Commencement")+
+expand_limits(y = c(0, NA)) +
+scale_y_continuous(labels = unit_format(unit = "M", scale = 1e-6))+
+#adjust background elements of plot
+theme_classic() + theme( panel.grid.minor = element_blank(),
+panel.grid.major.x = element_blank(),
+panel.grid.major.y = element_line(color ="grey",
+size = 0.02,
+linetype = 1))
+#add interactivity
+ggplotly(p)
+```
+Row
+-----------------------------------------------------------------------
+### China, India and Nepal are the top 3 countries of origin in 2021
+```{r}
+# top 10 country of origin
+p<-ggplot(country_2021, aes(x=country_name, y = commencement_number)) +
+#plot bar chart for commencement number with label
+geom_col(aes(x=reorder(country_name, commencement_number), y =
+commencement_number), fill= "dodgerblue2", alpha = 0.75) +
+#title and text adjustment
+ggtitle("Top 10 countries of origin of international student
+commencing in Australia in 2021") +
+theme(plot.title = element_text(hjust = 1, vjust = 1)) +
+theme(plot.title = element_text(size = 11),
+axis.text = element_text(size = 19),
+axis.title = element_text(size= 19)) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+#x,y lab
+xlab("") +
+ylab("Number of Commencement")+
+#flip the plot to better read country names
+coord_flip() +
+#adjust background elements of plot
+theme_classic() + theme(panel.border = element_blank(), panel.grid.major =
+element_blank(),
+panel.grid.minor = element_blank()
+)
+ggplotly(p, tooltip = "commencement_number")
+```
+### New South Wales has the most international students commence in higher education in
+2021
+```{r}
+#state plot
+p<-ggplot(state, aes(x=State, y = Commencement)) +
+#plot bar chart for commencement number with label
+geom_col(aes(x=reorder(State, Commencement), y = Commencement), fill=
+"dodgerblue2", alpha = 0.75) +
+#title and text adjustment
+ggtitle("International student commencement by state in 2021") +
+theme(plot.title = element_text(hjust = 1, vjust=0)) +
+theme(plot.title = element_text(size = 10),
+axis.text = element_text(size = 8),
+axis.title = element_text(size= 8)) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+#x,y lab
+xlab("State") +
+ylab("Commencement")+
+#adjust background elements of plot
+theme_classic() + theme(panel.border = element_blank(), panel.grid.major =
+element_blank(),
+panel.grid.minor = element_blank()
+)
+ggplotly(p, tooltip = "Commencement")
+```
+Economic Contribution
+=======================================================================
+Row
+-----------------------------------------------------------------------
+### Education is Australia's 4th biggest export goods and services in 2020
+```{r}
+ggplot(export, aes(x=Commodity, y = Share)) +
+#plot bar chart for export ranking and label
+geom_col(aes(x=reorder(Commodity, Share), y = Share, fill =
+ifelse(Commodity=="Education", 'Edu' ,"Rest")), alpha = 0.75) +
+geom_text(aes(y=Share, label = paste0(Share,"%")),
+vjust = 0.5, hjust=1) +
+#title and text adjustment
+ggtitle("Share of Australia's top 5 export goods and
+services in 2020") +
+theme(plot.title = element_text(hjust = 1, vjust=0)) +
+theme(plot.title = element_text(size = 10),
+axis.text = element_text(size = 7),
+axis.title = element_text(size= 7)) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+#x,y lab
+xlab("") +
+ylab("Share (%)")+
+scale_fill_manual(name="Colour of Bars",
+breaks=c('Edu','Rest'),
+values=c('Edu'='dodgerblue2','Rest'='dodgerblue4')) +
+#flip the plot to better read goods names
+coord_flip() +
+#adjust background elements of plot
+theme_classic() + theme(panel.border = element_blank(), panel.grid.major =
+element_blank(),
+panel.grid.minor = element_blank()
+)+ theme(legend.position="none")
+```
+### In 2025, Education is predicted to rise to the 3rd biggest export goods and services
+```{r}
+colors <- c("Iron ores & concentrates" = "gray", "Coal" = "gray",
+"Natural gas" = "gray", "Education" = "dodgerblue2",
+"Tourism Satellite Account " = "gray"
+)
+newggslopegraph(export_two, Year, Share, Commodity,
+Title = "Prediction: Share of Australia's top 5 export goods and services in 5 years",
+SubTitle = "2020 -2025",
+Caption = "Based on 5-year predictions in 2020",
+YTextSize = 3,
+DataTextSize = 3.5,
+LineColor = colors)
+```
+Row {data-height=300}
+-----------------------------------------------------------------------
+### From 2013 to 2020, the value of Australia's total exports of education-related services
+has been increasing, but a decrease is seen after 2019 following border closure due to
+Covid-19, see blue line for trend model
+```{r}
+p <- ggplot(value, aes(x=Year, y=Value, group=1)) +
+geom_line(size = 0.5) +
+geom_point(size = 0.8)+
+geom_smooth(formula = y ~ x, method = "lm", size = 0.4, colour = "dodgerblue3", se =
+FALSE)+
+#adding title and text
+ggtitle("Time series plot of Australia's total exports of education-related services in
+A$ Billion, 2013-2020") +
+theme(plot.title = element_text(hjust = 1)) +
+theme(plot.title = element_text(size = 13),
+axis.text = element_text(size = 10),
+axis.title = element_text(size= 10)) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+#x,y lab and lim
+xlab("Year") +
+ylab("Export value")+
+expand_limits(y = c(0, NA)) +
+scale_y_continuous(labels = unit_format(unit = "B", scale = 1e-3))+
+#adjust background elements of plot
+theme_classic() + theme( panel.grid.minor = element_blank(),
+panel.grid.major.x = element_blank(),
+panel.grid.major.y = element_line(color = "grey",
+size = 0.02,
+linetype = 1))
+ggplotly(p)
+```
