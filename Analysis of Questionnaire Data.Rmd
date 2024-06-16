@@ -1,0 +1,715 @@
+---
+title: "Statistical Analysis Report"
+author: "Ting Li"
+date: "2023-11-04"
+output: html_document
+
+   
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Travel agency questionnaire
+This report aims to understand the market requirements for travel agency services to help a group of young business entrepreneurs eager to establish a travel agency targeting travellers in Australia. Data was simulated based on responses to the questionnaire (see appendices) and numerical values were set to whole numbers during simulation. We import the simulated travel dataset into R for analysis.
+
+## Data description
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(scales)
+simulated_travel <- read.csv("simulated_travel.csv")
+head(simulated_travel)
+# check for missing values
+anyNA(simulated_travel)
+is.null(simulated_travel)
+str(simulated_travel)
+# Convert character to factor
+simulated_travel[sapply(simulated_travel, is.character)] <- lapply(simulated_travel[sapply(simulated_travel, is.character)], as.factor)
+# Inspect categorcal variables
+str(simulated_travel)
+```
+The simulated travel dataset has no missing value as anyNA() and is.null() both returns FALSE. As shown in head(), each variable represents one question from the travel agency questionnaire:\
+
+Age - Age of participants\
+Gender - Gender of participants\
+Annual_Income - Annual earning of the participant, for under 18 years olds they may choose to answer with parents' income\
+Travel_Frequency - Participant's frequency of travel per year\
+Travel_Reason - Purpose of travel\
+Travel_Companions - Who they travel with\
+Preferred_Travel_Type - Whether they prefer independent travel or with tour groups\
+Trip_Budget - How much money they are willing to spend for trip, in AUD\
+Travel_Plans_3_Years - Whether they are planning to travel within the next 3 years\
+Preferred_Destination - Where participants prefer to travel to\
+Interested_Activities - Activities they are interested in at destination\
+Important_Aspects - Aspects most important to them when booking travel packages\
+Services_Products - Services/products they look for from travel agencies\
+Consider_Booking - Whether they consider booking with a travel agency\
+Receive_Info - Whether they are willing to receive information from this travel agency\
+
+As all variables are categorical (apart from age and trip budget) and have a known set of possible values, we converted them to factors. As shown in str() after conversion, variables have 2 to 7 levels, with Preferred_Destination has the most levels (7).
+
+```{r}
+
+# Inspect numerical variables
+print("Output 1")
+summary(select_if(simulated_travel,is.numeric))
+
+
+```
+
+We now inspect numerical variables. As seen in Output 1, the minimum age is 10 and the maximum age is 70. Median age is 41 years old, slighly higher than the mean of 40.35 years old, indicating that data could be slightly left skewed. For trip budget, the minimum budget is 125 AUD and the maximum budget is 7978 AUD. The median budget is 3618, lower than the mean of 3798 aud, suggesting a possible right skewed data. We will inspect the distribution of age and budget by visualising them in the `Population Attributes` section.
+
+## Analysis of Responses
+
+### Stratified: Age and Trip Budget
+
+First let's investigate variable `Age` and `Trip_Budget`:\
+
+As required for Assignment 3, we create 2 strata for age and trip budget by adding 2 new variables strata_age and strata_budget. As seen in str(simulated_travel), Strata_age was created using right = FALSE to include the minimum value 10, and breaks were set up to 71 so it includes the maximum age value 70, it has 2 levels (strata), [10,35) ( 10 to 34 yo as "[]" means inclusive of the limit and "()" means exclusive) and [35,71) (35 to 70 yo). We do not need to do the same for strata_budget as the min and max value of budget is within 0-8000. 
+
+Strata_budget has 2 levels (0,4e+03] and (4e+03,8e+03]. 4e+03 means 4 times 10^3=4000 and 8e+03 is 8*10^3=8000, so the 2 strata is 0 to 4000 aud and 4001 to 8000 aud, as all numerical values are simulated whole numbers. We set the population to 2500 and the sample size to 250 for travel agency data for assignment 3.
+
+
+```{r}
+# Population size and sample size
+N <- 2500
+n <- 250
+
+# Create strata based on age and budget
+simulated_travel <- simulated_travel %>%
+  mutate(strata_age = cut(Age, breaks = c(10, 35, 71), right = FALSE),
+         strata_budget = cut(Trip_Budget, breaks = c(0, 4000, 8000)))
+str(simulated_travel)
+```
+
+Now, we calculate an estimate of the average age of the travelers and its 95% confidence interval using formula from week 5 slides. Elements needed for the formula were calculated and listed below. The size of each stratum n1 and n2 was calculated by summing the count of observation within each stratum, then N1/N2 was allocated based on proportion. Table of sample mean for age in each stratum was calculated using mean() and sample variance with var(). m1 and m2 are extracted sample mean for age in each stratum and var1 and var2 are sample variance for the 2 stratum. The weight of each stratum are W1 and W2 and the estimate of average age `mean1` = 40.352 was calculated by multiplying the weight of each stratum by the sample mean for age in each stratum. As we used the proportional allocation rule it is the same as the overall sample mean of age found in data description section. 
+
+To calculate the bounds for 95% confidence intervals, we get the variance of the unbiased estimator of population mean using formula `B=2*sqrt(sum of (Wh^2)*varh*(Nh-nh)/(nh*(Nh-1)))`, the lower bound of CI is obtained by mean minus B1 and the higher bound of CI by adding B2 to mean. The 95% CI for average age is (39.25,41.45) as shown in Output 2.
+
+```{r}
+
+# Calculate sample means for age in each stratum
+n1 <- sum(simulated_travel$strata_age == "[10,35)")
+n2 <- sum(simulated_travel$strata_age == "[35,71)")
+N1 <- n1 * (N / n)
+N2 <- n2 * (N / n)
+
+sample_means <- simulated_travel %>%
+  group_by(strata_age) %>%
+  summarise(Mean_Age = mean(Age),var_Age = var(Age))
+m1=as.numeric(sample_means[1,2])
+m2=as.numeric(sample_means[2,2])
+
+var1=as.numeric(sample_means[1,3])
+var2=as.numeric(sample_means[2,3])
+W1=N1/N
+W2=N2/N
+mean1=W1*m1+W2*m2 # estimate of average age
+
+mean1
+# Calculate confidence intervals for average age (39.25,41.45)
+B1=2*sqrt((W1^2)*var1*(N1-n1)/(n1*(N1-1))+(W2^2)*var2*(N2-n2)/(n2*(N2-1)))
+low_age = mean1-B1
+high_age= mean1+B1
+cat("Output 2 - 95% CI for average age is (", low_age, ",", high_age, ")")
+
+```
+
+Now, we do the same for `trip_budget`. Elements needed for the formula were calculated and listed below. The size of each stratum n3 and n4 was calculated by summing the count of observation within each stratum, then N3 and N4 was allocated based on proportion. Table of sample mean for budget in each stratum was calculated using mean() and sample variance with var(). m3 and m4 are extracted sample mean for budget in each stratum and var3 and var4 are sample variance for the 2 stratum. The weight of each stratum are W3 and W4 and the estimate of average budget `mean2` = 3790 was calculated by multiplying the weight of each stratum by the sample mean for budget in each stratum. As we used the proportional allocation rule it is the same as the overall sample mean of budget found in data description section. 
+
+To calculate the bounds for 95% confidence intervals, we get the variance of the unbiased estimator of population mean using formula `B=2*sqrt(sum of (Wh^2)*varh*(Nh-nh)/(nh*(Nh-1)))`, the lower bound of CI is obtained by mean minus B2 and the higher bound of CI by adding B2 to mean. The 95% CI for average budget is (3649.02,3930.96), as shown in Output 3.
+
+```{r}
+# Create strata based on budget 
+n3 <- sum(simulated_travel$strata_budget == "(0,4e+03]")
+n4 <- sum(simulated_travel$strata_budget == "(4e+03,8e+03]")
+N3 <- n3 * (N / n)
+N4 <- n4 * (N / n)
+# Calculate sample means for budget in each stratum
+sample_means <- simulated_travel %>%
+  group_by(strata_budget) %>%
+  summarise(Mean_budget = mean(Trip_Budget),var_budget = var(Trip_Budget))
+m3=as.numeric(sample_means[1,2])
+m4=as.numeric(sample_means[2,2])
+
+var3=as.numeric(sample_means[1,3])
+var4=as.numeric(sample_means[2,3])
+W3=N3/N
+W4=N4/N
+mean2=W3*m3+W4*m4
+B2=2*sqrt((W3^2)*var3*(N3-n3)/(n3*(N3-1))+(W4^2)*var4*(N4-n4)/(n4*(N4-1)))
+
+# Calculate confidence intervals for average budget (3649.02,3930.96)
+
+low_budget = mean2-B2
+high_budget= mean2+B2
+cat("Output 3 - 95% CI for budget is (", low_budget, ",", high_budget, ")")
+```
+
+Error estimates for age and budget were obtained by dividing B1 and B2, as shown in output 4, age error is 0.55 and budget error is 70.49.
+
+```{r}
+
+# Error estimates for age and budget
+age_error <- round (B1/2,2)
+budget_error <- round (B2/2, 2)
+age_error
+budget_error
+
+cat("Output 4 - Age Error:", age_error, "\n","          Budget Error:", budget_error)
+
+```
+### T-tests
+
+Now we want to assess if the amount budgeted by the different age groups (stratum) is the same or is it significantly different, by conducting t-tests. The Welch Two Sample t-test is used and its null hypothesis is that the true difference in means between the 2 groups (stratum) tested is equal to 0, and the alternative hypothesis is that true difference in means between group is not equal to 0. Output 5 shows p-value=0.058, which is close to but greater than the alpha level of 0.05. With this p-value, we fail to reject the null hypothesis that the true difference in means between the 2 groups (stratum) tested is equal to 0 with 95% confidence level.
+
+Now we move on to assess if the amount budgeted by the different gender is the same or is it significantly different. Output 6 shows p-value=0.086, which is greater than the alpha level of 0.05. With this p-value, we fail to reject the null hypothesis that the true difference in means between male and female is equal to 0 with 95% confidence level.
+
+Then, we move on to assess if the budget by the different responses in their travel plans in 3 years is the same or is it significantly different. Output 7 shows p-value=0.61, which is greater than the alpha level of 0.05. With this p-value, we fail to reject the null hypothesis that the true difference in means between people with or without travel plans in the next 3 years is equal to 0 with 95% confidence level.
+
+```{r}
+# T-test for budget by different age groups 
+t_test_result1 <- t.test(simulated_travel$Trip_Budget ~ simulated_travel$strata_age)
+
+
+# T-test for budget by gender
+t_test_result2 <-t.test(Trip_Budget~Gender,data=simulated_travel)
+
+# T-test for budget by travel plan in 3 years
+t_test_result3 <-t.test(Trip_Budget~Travel_Plans_3_Years,data=simulated_travel)
+
+print("Output 5:")
+t_test_result1
+print("Output 6:")
+t_test_result2
+print("Output 7:")
+t_test_result3
+```
+
+### Population Attributes
+
+Next, we discuss attributes of the population by plotting the age distribution, budget, popular destinations, travel style, interested activities, most important aspects when booking travel packages, service expectation from travel agency and annual income to better understand travellers in Australia. To plot categorical variables, we create a separate dataframe for each variable with values and count/frequency of each value.
+
+Figure 1 shows the histogram of age distribution of respondents of our survey, as anticipated in data description, data is slightly left skewed. The most common age group among participants are people in their 60s, with over 50 people, followed by people in their 20s and 40s.
+
+Figure 2 shows the histogram of budget distribution of respondents, as found in data description, data is right skewed. The most common amount of budget among participants is around $1000, followed by 3000 aud and 5000 aud.
+
+Figure 3 shows barplot of popular destinations among respondents, with count/frequency plotted in white within each bar. The most popular destination is Oceania with 41 responses, followed by Antarctica, Africa and South America. The gap between each level is not too evident so the travel agency should pay attention to all destinations.
+
+Figure 4 shows barplot of participants interested activities at destination. The most interested activitiy is adventure with 55 responses, followed by food and sightseeing with 52 responses.
+
+Figure 5 shows barplot of most important aspect among respondents when choosing travel packages. The most important aspect is convenience with 57 responses, followed by other aspects with 54 and cost with 51 responses. Participants value unique experiences the least with 43 responses.
+
+Figure 6 shows barplot of most interested travel products or services among respondents. Accomodation is the most popular travel product with 49 responses, followed by discount with 47 responses, Other and Tickets to attractions with 44 responses. Tour packages are the least popular travel product with 30 responses.
+
+Figure 7 shows annual income of participants (for under 18 years olds it could be parents' income). Most respondents earn `$45001-120000` per year, with 71 responses, followed by 65 people earning `$120001-$180000` per annum and 59 people earning above $180000. Almost half of the participants earn more than 120001 aud, which suggests that the sample is high earning.
+
+```{r}
+# Attributes of the population
+# Age distribution
+ggplot(simulated_travel, aes(x = Age)) +
+  geom_histogram(binwidth = 10, fill = "blue", alpha = 0.5) +
+  labs(title = "Figure 1. Age Distribution of Respondents", x = "Age", y = "Count")+
+  scale_x_continuous(breaks = seq(10, 70, by = 10))
+
+
+# Budget distrubution                   
+ggplot(simulated_travel, aes(x = Trip_Budget)) +
+  geom_histogram(binwidth = 1000, fill = "blue", alpha = 0.5) +
+  labs(title = "Figure 2. Budget Distribution of Respondents", x = "Budget", y = "Count") +
+  scale_x_continuous(breaks = seq(0, 8000, by = 1000), 
+                     labels = scales::dollar_format(scale = 1e-3, suffix = "k"))
+
+# Popular Destinations 
+destination_counts <- table(simulated_travel$Preferred_Destination)
+destination_counts <- destination_counts[order(-destination_counts)]
+destination_data <- data.frame(Destination = names(destination_counts), Count = as.numeric(destination_counts))
+
+
+ggplot(destination_data, aes(x = reorder(Destination, -Count), y = Count)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = 1.5, colour = "white")+
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 3. Popular Destinations among Respondents", x = "Destinations", y = "Count")
+
+# Interested activities 
+activity_counts <- table(simulated_travel$Interested_Activities)
+activity_counts <- activity_counts[order(-activity_counts)]
+activity_data <- data.frame(Activity = names(activity_counts), Count = as.numeric(activity_counts))
+
+
+ggplot(activity_data, aes(x = reorder(Activity, -Count), y = Count)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = 1.5, colour = "white")+
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 4. Interested activities among Respondents", x = "Activity", y = "Count")
+
+
+# Important aspects 
+Aspect_counts <- table(simulated_travel$Important_Aspects)
+Aspect_counts <- Aspect_counts[order(-Aspect_counts)]
+Aspect_data <- data.frame(Aspect = names(Aspect_counts), Count = as.numeric(Aspect_counts))
+
+
+ggplot(Aspect_data, aes(x = reorder(Aspect, -Count), y = Count)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = 1.5, colour = "white")+
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 5. Important aspect among respondents when choosing travel packages", x = "Aspect", y = "Count")
+
+#Interested Product 
+Product_counts <- table(simulated_travel$Services_Products)
+Product_counts <- Product_counts[order(-Product_counts)]
+Product_data <- data.frame(Product = names(Product_counts), Count = as.numeric(Product_counts))
+
+
+ggplot(Product_data, aes(x = reorder(Product, -Count), y = Count)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = 1.5, colour = "white")+
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 6. Interested Travel Products among Respondents", x = "Product", y = "Count")
+
+
+#Annual income  
+Income_counts <- table(simulated_travel$Annual_Income)
+Income_counts <- Income_counts[order(-Income_counts)]
+Income_data <- data.frame(Income = names(Income_counts), Count = as.numeric(Income_counts))
+
+
+ggplot(Income_data, aes(x = reorder(Income, -Count), y = Count)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = 1.5, colour = "white")+
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 7. Annual Income of Respondents", x = "Income", y = "Count")
+```
+
+### Correlation between age and budget
+
+Next, we'd like to investigate the relationship between age and budget, by calculating their correlation. Figure 8 shows age and budget plotted together, we do not observe correlation between the 2 variables, and the the correlation between age and trip budget `cor` is calculated to 0.1, showing a very weak positive correlation. This indicates that the travel agency shouldn't discriminate against different age groups as the ability to budget more for trips is not correlated with age.
+
+```{r}
+# Correlation between age and budget
+cor <- round (cor(simulated_travel$Age, simulated_travel$Trip_Budget),2)
+
+ggplot(simulated_travel, aes(y=Age, x=Trip_Budget)) + 
+  geom_point() + 
+  geom_smooth(method="lm", col="black") + 
+  labs(title = "Figure 8. Correlation between age and budget")+
+  annotate("text", x=20, y=4.5, label=paste0("cor = ", cor), hjust=0.5) +
+  theme_classic() 
+```
+
+### Estimate of proportion who want to hear more about the business
+
+To estimate of the proportion of people who would want to hear more about the travel agency business (Receive_Info == "Yes"), we get the proportion p and q(=1-p) and put a 95% CI on it using formula B = 2*sqrt((p*q/(n-1))*((N-n)/N)). Output 8 shows the proportion of people who would want to hear more about the travel agency business is 0.528, with 95% CI (0.47, 0.59).
+
+```{r}
+# Estimate of proportion who want to hear more about the business
+
+p <- mean(simulated_travel$Receive_Info == "Yes")
+q= 1-p
+B = 2*sqrt((p*q/(n-1))*((N-n)/N))
+low_B=round(p-B, 2)
+high_B=round(p+B,2)
+cat("Output 8 - the proportion p is", p,  "95% CI for proportion of people wanting to hear more about the business is (", low_B, ",", high_B, ")")
+```
+
+### Which of the predictors have a significant effect on booking decision
+
+Lastly, we want to decide which of the predictors have a significant effect on participants' booking decision (Yes or No), to help shape the business stragegy around influential predictors, by fitting a logistic regression model (model 1) with all predictors. We also obtained the residual deviance and its degree of freedom to check adequacy of model 1, by performing the chi-square goodness of fit test. The chi-square test returned p<0.05. Since p is smaller than 0.05, we reject the null hypothesis and conclude that model1 is not adequate. Although model is not adequate, it provides some insights about influencial variables. Output 9 shows that the amount of trip budget, being interested in transportation related travel services and being Male have significant effect on whether participants book with travel agency, so the company could focus on these predictors. 
+```{r}
+#logistic regression which of the predictors have a significant effect on booking decision
+model1 <- glm(Consider_Booking ~ Age + Gender + Annual_Income+ Travel_Frequency+Travel_Reason +
+                Travel_Companions+Preferred_Travel_Type+Trip_Budget+Travel_Plans_3_Years+
+                Interested_Activities+Important_Aspects+Services_Products+Receive_Info,
+              family=binomial, data=simulated_travel)
+print("Output 9:")
+summary.glm(model1)
+deviance(model1)
+pchisq(model1$deviance, df=model1$df.residual, lower.tail=FALSE)
+#p<0.05 so model is not adequate
+```
+
+
+
+
+# Youth drug use questionnaire
+This report aims to gain understanding of Australian's Youth ilicit drug use, and provide insights for policy makers to address the issue. Data was simulated based on responses to the drug questionnaire (see appendices) and numerical values were set to whole numbers during simulation. We import the simulated drug use dataset into R for analysis.
+
+## Data description
+
+```{r}
+
+simulated_drug <- read.csv("simulated_drug.csv")
+head(simulated_drug)
+# check for missing values
+anyNA(simulated_drug)
+is.null(simulated_drug)
+str(simulated_drug)
+# Convert character to factor
+simulated_drug[sapply(simulated_drug, is.character)] <- lapply(simulated_drug[sapply(simulated_drug, is.character)], as.factor)
+# Inspect categorcal variables
+str(simulated_drug)
+```
+The simulated travel dataset has no missing value as anyNA() and is.null() both returns FALSE. As shown in head(), each variable represents one question from the travel agency questionnaire:\
+
+Age - Age of participants\
+Gender - Gender of participants\
+Education - Education institution currently in\
+Family_Background - Participant's family background regarding parents/guardian\
+Yearly_Use - Number of days of drug use in the past year\
+Weekly_Drug_Spending - How much in AUD do they spend on drugs per week\
+Econ_Incentives_Deter - Whether economic incentives would deter drug use\
+Health_Effect_Deter - Whether health concerns would deter drug use\
+Legal_Impact_Deter  - Whether legal impact would deter drug use\
+Moral_Religion_Deter - Whether moral standards or religion would deter drug use\
+Intro_To_Drugs  - How they were first introduced to illicit drugs
+Influence_Of_Celebrities  - Would celebrities' drug use increase chances of them using illicit drugs
+Campaign_Frequency - How often they see or hear about campaigns against illicit drug use on media/social media
+Anti_Drug_Campaigns_Deter - Whether anti-drug campains would deter drug use\
+Know_Someone_Using_Drugs - whether they know someone using drugs in their family or friend group 
+Drug_Presence_In_Environment - How often they see or hear about illicit drugs in your environment (home, school, community) Supportive_Environment_Deter - Whether supportive social environment would deter drug use\
+Reasons_For_Drug_Use - Opinion on main reasons for illicit drug use in the young generation
+Want_Help - Whether they are open to receive help to stop drug addictions
+
+All categorical variables and have a known set of possible values, we converted them to factors. As shown in str() after conversion, variables have 2 to 7 levels, with Reasons has the most levels (7).
+
+```{r}
+# Inspect numerical variables
+print("Output 1")
+summary(select_if(simulated_drug,is.numeric))
+
+
+```
+
+We now inspect numerical variables. As seen in Output 1, the minimum age is 15 and the maximum age is 24, satisfying the definition of Youth by the UN. Median age is 20 years old, slighly higher than the mean of 19.95 years old, indicating that data could be slightly left skewed. For yearly use, the minimum value is 2 days and the maximum budget is 365 days, suggesting different levels of drug addiction among participants. The median and mean days of use are around 188 days. For the amoung of money spent on drugs per week, the minimum spending is 0 aud and the maximum spending is 200 aud. Median spending is 106.5, higher than the mean spending of 104.7, indicating that data could be slightly left skewed.
+
+## Analysis of Responses
+
+### Stratified by Age 
+
+First we create 2 stratum for variable `Age` to see, divided by 18 years old, to see if responses for weekly spending on drugs and annual drug use is different:\
+
+As speficied for Assignment 3, we set the population to 2000 and the sample size to 200 for simulated drug data. As seen in str(simulated_drug), Strata_age was created using right = FALSE to include the minimum value 15, and breaks were set up to 25 so it includes the maximum age value 24, it has 2 levels (strata), [15,18) ( 15 to 17 yo as "[]" means inclusive of the limit and "()" means exclusive) and [18,25) (18 to 24 yo). 
+
+```{r}
+# Population size and sample size
+N <- 2000
+n <- 200
+
+# Create strata based on age and budget
+simulated_drug <- simulated_drug %>%
+  mutate(strata_age = cut(Age, breaks = c(15, 18, 25), right = FALSE))
+str(simulated_drug)
+```
+
+Now, we calculate an estimate of the average age of the travelers and its 95% confidence interval using formula from week 5 slides. Elements needed for the formula were calculated and listed below. The size of each stratum n1 and n2 was calculated by summing the count of observation within each stratum, then N1/N2 was allocated based on proportion. Table of sample mean for age in each stratum was calculated using mean() and sample variance with var(). m1 and m2 are extracted sample mean for age in each stratum and var1 and var2 are sample variance for the 2 stratum. The weight of each stratum are W1 and W2 and the estimate of average age `mean1` = 19.95 was calculated by multiplying the weight of each stratum by the sample mean for age in each stratum. As we used the proportional allocation rule it is the same as the sample mean of age found in data description section. 
+
+To calculate the bounds for 95% confidence intervals, we get the variance of the unbiased estimator of population mean using formula `B=2*sqrt(sum of (Wh^2)*varh*(Nh-nh)/(nh*(Nh-1)))`, the lower bound of CI is obtained by mean minus B1 and the higher bound of CI by adding B2 to mean. The 95% CI for average age is (19.72, 20.18) as shown in Output 2.
+
+```{r}
+
+# Calculate sample means for age in each stratum
+n1 <- sum(simulated_drug$strata_age == "[15,18)")
+n2 <- sum(simulated_drug$strata_age == "[18,25)")
+N1 <- n1 * (N / n)
+N2 <- n2 * (N / n)
+
+sample_means <- simulated_drug %>%
+  group_by(strata_age) %>%
+  summarise(Mean_Age = mean(Age),var_Age = var(Age))
+m1=as.numeric(sample_means[1,2])
+m2=as.numeric(sample_means[2,2])
+
+var1=as.numeric(sample_means[1,3])
+var2=as.numeric(sample_means[2,3])
+W1=N1/N
+W2=N2/N
+mean1=W1*m1+W2*m2 # estimate of average age
+
+mean1
+# Calculate confidence intervals for average age (39.25,41.45)
+B1=2*sqrt((W1^2)*var1*(N1-n1)/(n1*(N1-1))+(W2^2)*var2*(N2-n2)/(n2*(N2-1)))
+low_age = round(mean1-B1,2)
+high_age= round(mean1+B1,2)
+cat("Output 2 - 95% CI for average age is (", low_age, ",", high_age, ")")
+
+```
+
+Error estimates for age was obtained by dividing B1, as shown in output 3, age error is 0.12.
+```{r}
+
+# Error estimates for age and budget
+age_error <- round (B1/2,2)
+
+
+cat("Output 3 - Age Error:", age_error)
+
+```
+Now we want to assess if the amount spent on drugs per week, and the annual drug use differ by the 2 different age groups (stratum), or by gender. We conduct Welch Two Sample t-tests.The null hypothesis is that the true difference in means between the 2 groups (stratum) tested is equal to 0, and the alternative hypothesis is that true difference in means between group is not equal to 0. 
+
+Output 4 shows p-value=0.06, which is slightly greater than the alpha level of 0.05. With this p-value, we fail to reject the null hypothesis that the true difference in means of yearly drug use between under 18s and over 18s is equal to 0 with 95% confidence level.
+
+Output 5 shows p-value=0.94, which is greater than the alpha level of 0.05. With this p-value, we fail to reject the null hypothesis that the true difference in means of weekly spending on drugs between between under 18s and over 18s is equal to 0 with 95% confidence level.
+
+Now we move on to assess if the weekly spending and yearly drug use by the different gender is the same or significantly different. Output 6 shows p-value=0.78, which is greater than the alpha level of 0.05. With this p-value, we fail to reject the null hypothesis that the true difference in means of weekly spending on drugs between male and female is equal to 0 with 95% confidence level. Output 7 shows p-value=0.20, which is greater than the alpha level of 0.05. With this p-value, we fail to reject the null hypothesis that the true difference in means of yearly drug use between male and female is equal to 0 with 95% confidence level.
+
+```{r}
+# T-test for yearly use by different age groups 
+t_test_result1 <- t.test(simulated_drug$Yearly_Use ~ simulated_drug$strata_age)
+# T-test for weekly spending by different age groups 
+t_test_result2 <- t.test(simulated_drug$Weekly_Drug_Spending ~ simulated_drug$strata_age)
+
+# T-test for weekly spending by gender
+t_test_result3 <-t.test(Weekly_Drug_Spending~Gender,data=simulated_drug)
+
+# T-test for yearly use of drugs by gender
+t_test_result4 <-t.test(Yearly_Use~Gender,data=simulated_drug)
+
+print("Output 4:")
+t_test_result1
+print("Output 5:")
+t_test_result2
+print("Output 6:")
+t_test_result3
+print("Output 7:")
+t_test_result4
+```
+
+### Population Attributes
+
+Next, we discuss attributes of the population by plotting the age distribution, weekly spending on drugs, yearly use of drugs, family background, first introduction to drugs, frequency of illicit drug exposure in close environment and youth's perceived reason for youth drug addiction. To plot categorical variables, we create a separate dataframe for each variable with values and count/frequency of each value.
+
+Figure 1 shows the histogram of age distribution of respondents of our survey, as anticipated in data description, data is slightly left skewed. The most common age of participants is 22 years old, followed by participants that are 17, 23, 24 years old.
+
+Figure 2 shows the histogram of participants' weekly spending on drugs, The most common amount of spending among participants is around $160, followed by 120 aud and 40 aud.
+
+Figure 3 shows histogram of participants' number of days of drug use in the past year. Most common answer is 180 and 216 days of drug use, followed by 252 and 324 days of drug use. This suggests frequent use of drugs among respondants.
+
+Figure 4 shows barplot of participants' family background. The most common response is 55 family with 2 parents that are married followed by 53 one parent families, 51 living with guardian and 41 living with 2 unmarried parents.
+
+Figure 5 shows barplot of youth's first introduction to drugs. The most common first introduction to drugs happend at school, with 57 responses, followed by home with 54 responses.
+
+Figure 6 shows barplot of the frequency of illicit drug exposure in close environment (home or school). Most participants are exposed to illicit drugs weekly, followed by 41 responses of never exposed to drugs in their close environment.
+
+Figure 7 shows perceived reason for youth drug use by participants. Most respondents thinks that the reason why youth use illicit drugs is due to financial hardship, followed by family influence and curiosity.
+
+Figure 8 shows education institutions participants are currently attending. The most common response is higher education, with 56 responses, followed by TAFE, and those not currently enrolled in any education programs. Not that for some under 18 years olds they could also be in higher education with special arrangement and/or parental consent.
+
+```{r}
+# Attributes of the population
+# Age distribution
+ggplot(simulated_drug, aes(x = Age)) +
+  geom_histogram(binwidth = 1, fill = "grey", alpha = 0.7) +
+  labs(title = "Figure 1. Age Distribution of Respondents", x = "Age", y = "Count")+
+  scale_x_continuous(breaks = seq(15, 24, by = 1))
+
+
+# weekly spending                   
+ggplot(simulated_drug, aes(x = Weekly_Drug_Spending)) +
+  geom_histogram(binwidth = 40, fill = "grey", alpha = 0.7) +
+  labs(title = "Figure 2. Weekly spending on drugs by respondents", x = "Spending in AUD", y = "Count") +
+  scale_x_continuous(breaks = seq(0, 200, by = 40), 
+                     labels = scales::dollar_format(scale = 1))
+
+# yearly use                 
+ggplot(simulated_drug, aes(x = Yearly_Use)) +
+  geom_histogram(binwidth = 36, fill = "grey", alpha = 0.7) +
+  labs(title = "Figure 3. Number of days the respondents has used drugs in the past year", x = "Days", y = "Count") +
+  scale_x_continuous(breaks = seq(0, 365, by = 36))
+
+# family background 
+family_counts <- table(simulated_drug$Family_Background)
+family_counts <- family_counts[order(-family_counts)]
+family_data <- data.frame(Family = names(family_counts), Count = as.numeric(family_counts))
+
+
+ggplot(family_data, aes(x = reorder(Family, -Count), y = Count)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = 1.5, colour = "white")+
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 4. Family background of Respondents", x = "Family background", y = "Count")
+
+# first introduction to drugs
+Intro_counts <- table(simulated_drug$Intro_To_Drugs)
+Intro_counts <- Intro_counts[order(-Intro_counts)]
+Intro_data <- data.frame(Intro_to_drugs = names(Intro_counts), Count = as.numeric(Intro_counts))
+
+
+ggplot(Intro_data, aes(x = reorder(Intro_to_drugs, -Count), y = Count)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = 1.5, colour = "white")+
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 5. First introduction to drug among Respondents", x = "First introduction", y = "Count")
+
+
+# frequency of illicit drugs in environment 
+Presence_counts <- table(simulated_drug$Drug_Presence_In_Environment)
+Presence_counts <- Presence_counts[order(-Presence_counts)]
+Presence_data <- data.frame(Frequency_of_drug = names(Presence_counts), Count = as.numeric(Presence_counts))
+
+
+ggplot(Presence_data, aes(x = reorder(Frequency_of_drug, -Count), y = Count)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = 1.5, colour = "white")+
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 6. Frequency of drug presence in participants' environment", x = "Frequency", y = "Count")
+
+#Perceived reason for youth drug use 
+Reasons_counts <- table(simulated_drug$Reasons_For_Drug_Use)
+Reasons_counts <- Reasons_counts[order(-Reasons_counts)]
+Reasons_data <- data.frame(Reasons = names(Reasons_counts), Count = as.numeric(Reasons_counts))
+
+
+ggplot(Reasons_data, aes(x = reorder(Reasons, -Count), y = Count)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = 1.5, colour = "white")+
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 7. Perceived reason for youth drug use among respondents", x = "Reasons", y = "Count")
+
+#Education attending
+Education_counts <- table(simulated_drug$Education)
+Education_counts <- Education_counts[order(-Education_counts)]
+Education_data <- data.frame(Education = names(Education_counts), Count = as.numeric(Education_counts))
+
+
+ggplot(Education_data, aes(x = reorder(Education, -Count), y = Count)) +
+  geom_col() +
+  geom_text(aes(label = Count), vjust = 1.5, colour = "white")+
+  scale_x_discrete(labels = label_wrap(10)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Figure 8. Education institutions currently attended by respondents", x = "Education", y = "Count")
+
+
+
+```
+
+### Correlation between age, weekly spending on drugs and yearly use of drugs
+
+Next, we'd like to investigate the relationship among age weekly spending on drugs and yearly use of drugs, by calculating their correlation. Output 8 shows the correlation among these 3 variables, we observe a weak negative correlation correlation between age and yearly_use, and close to no correlation between age and weekly drug spending and between yearly use and weekly drug spending. This indicates that the as youth grows older they might reduce yearly use of illicit drugs.
+
+```{r}
+# Correlation between age and budget
+
+cor <-round(cor(simulated_drug[, c('Age','Weekly_Drug_Spending','Yearly_Use')]),2)
+print("Output 8 - Correlation between age, weekly spending on drugs and yearly use of drugs is:")
+print(cor)
+```
+
+### Estimate of proportion of youth who would deter drug use for financial, moral or social reasons
+
+For policy making, we want to estimate of proportion of youth who would deter drug use for financial, moral or social reasons.  To estimate of the proportion of people who deter drug use with a "Yes" response for financial, moral or social related reasons, we get the proportion p and q(=1-p) and put a 95% CI on it using formula B = 2*sqrt((p*q/(n-1))*((N-n)/N)). 
+
+Output 9 shows the proportion of people who would deter drug use for economic incentives is 0.47, with 95% CI (0.4, 0.54).
+
+Output 10 shows the proportion of people who would deter drug use for health is 0.46, with 95% CI (0.39, 0.53).
+
+Output 11 shows the proportion of people who would deter drug use for legal impact is 0.475, with 95% CI (0.41, 0.54).
+
+Output 12 shows the proportion of people who would deter drug use for moral/religion is 0.515, with 95% CI (0.45, 0.58).
+
+Output 13 shows the proportion of people who would deter drug use for anti-drug campaigns is 0.405, with 95% CI (0.34, 0.47).
+
+Output 14 shows the proportion of people who would deter drug use for ea supportive environment is 0.535, with 95% CI (0.47, 0.6).
+
+```{r}
+# Estimate of proportion who would deter drug use for economic incentives
+
+p <- mean(simulated_drug$Econ_Incentives_Deter == "Yes")
+q= 1-p
+B = 2*sqrt((p*q/(n-1))*((N-n)/N))
+low_B=round(p-B, 2)
+high_B=round(p+B,2)
+cat("Output 9 - the proportion p is", p,  "95% CI for proportion of youth who would deter drug use for ecomonic incentives is (", low_B, ",", high_B, ")", "\n")
+
+# Estimate of proportion who would deter drug use for health
+
+p <- mean(simulated_drug$Health_Effect_Deter == "Yes")
+q= 1-p
+B = 2*sqrt((p*q/(n-1))*((N-n)/N))
+low_B=round(p-B, 2)
+high_B=round(p+B,2)
+cat("Output 10 - the proportion p is", p,  "95% CI for proportion of youth who would deter drug use for health is (", low_B, ",", high_B, ")", "\n")
+
+# Estimate of proportion who would deter drug use for legal impacts
+
+p <- mean(simulated_drug$Legal_Impact_Deter == "Yes")
+q= 1-p
+B = 2*sqrt((p*q/(n-1))*((N-n)/N))
+low_B=round(p-B, 2)
+high_B=round(p+B,2)
+cat("Output 11 - the proportion p is", p,  "95% CI for proportion of youth who would deter drug use for legal impact is (", low_B, ",", high_B, ")", "\n")
+
+# Estimate of proportion who would deter drug use for moral/religion
+
+p <- mean(simulated_drug$Moral_Religion_Deter == "Yes")
+q= 1-p
+B = 2*sqrt((p*q/(n-1))*((N-n)/N))
+low_B=round(p-B, 2)
+high_B=round(p+B,2)
+cat("Output 12 - the proportion p is", p,  "95% CI for proportion of youth who would deter drug use for moral/religion is (", low_B, ",", high_B, ")", "\n")
+
+# Estimate of proportion who would deter drug use for anti drug campaigns
+
+p <- mean(simulated_drug$Anti_Drug_Campaigns_Deter == "Yes")
+q= 1-p
+B = 2*sqrt((p*q/(n-1))*((N-n)/N))
+low_B=round(p-B, 2)
+high_B=round(p+B,2)
+cat("Output 13 - the proportion p is", p,  "95% CI for proportion of youth who would deter drug use for anti drug campaigns is (", low_B, ",", high_B, ")", "\n")
+
+# Estimate of proportion who would deter drug use for a supportive environment
+
+p <- mean(simulated_drug$Supportive_Environment_Deter == "Yes")
+q= 1-p
+B = 2*sqrt((p*q/(n-1))*((N-n)/N))
+low_B=round(p-B, 2)
+high_B=round(p+B,2)
+cat("Output 14 - the proportion p is", p,  "95% CI for proportion of youth who would deter drug use for a supportive environment is (", low_B, ",", high_B, ")", "\n")
+```
+
+### Estimate of proportion of youth wanting help to stop illicit drug use
+
+Output 15 shows the proportion of people who would deter drug use for economic incentives is 0.525, with 95% CI (0.46, 0.59).
+
+```{r}
+# Estimate of proportion who would deter drug use for health
+
+p <- mean(simulated_drug$Want_Help == "Yes")
+q= 1-p
+B = 2*sqrt((p*q/(n-1))*((N-n)/N))
+low_B=round(p-B, 2)
+high_B=round(p+B,2)
+cat("Output 15 - the proportion p is", p,  "95% CI for proportion of youth wanting help to stop illicit drug use is (", low_B, ",", high_B, ")", "\n")
+
+```
+
+### Which of the predictors have a significant effect on decision to receive help to stop illicit drug use
+
+Knowing which of the predictors have a significant effect on youth' decision to receive help to stop using illicit drugs is key to policy makers, so we fit a logistic regression model (model 1) with all predictors. We also obtained the residual deviance and its degree of freedom to check adequacy of model 1, by performing the chi-square goodness of fit test. The chi-square test returned p<0.05. Since p is smaller than 0.05, we reject the null hypothesis and conclude that model1 is not adequate. Output 16 shows no significant predictors, however, legal_impact_deter shows a borderline p-value of p=0.07, although it is not enough to be significant, it still indicates that potential legal impact might impact whether participants want to receive help to stop illicit drug use. 
+```{r}
+#logistic regression which of the predictors have a significant effect on decision to want help
+model1 <- glm(Want_Help ~ Age + Gender + Education+ Family_Background+Yearly_Use +
+                Weekly_Drug_Spending+Econ_Incentives_Deter+Health_Effect_Deter+Legal_Impact_Deter+Econ_Incentives_Deter+Moral_Religion_Deter+Intro_To_Drugs+Influence_Of_Celebrities+Campaign_Frequency+Anti_Drug_Campaigns_Deter+Know_Someone_Using_Drugs+Drug_Presence_In_Environment+Supportive_Environment_Deter+Reasons_For_Drug_Use,
+              family=binomial, data=simulated_drug)
+print("Output 16:")
+summary.glm(model1)
+deviance(model1)
+pchisq(model1$deviance, df=model1$df.residual, lower.tail=FALSE)
+#p<0.05 so model is not adequate
+```
+
+
+

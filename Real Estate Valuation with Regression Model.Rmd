@@ -1,0 +1,568 @@
+---
+title: "MATH1312 Major Project: Real Estate Valuation with Regression Model"
+author: "Ting Li, s3912985"
+date: '2023-05-30'
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## 1. Introduction and Objective
+
+The housing market has been heated for both buyers and sellers as owning a house is an important investment for individuals and families. A model that can predict value of houses based on features of the property can help sellers and real estate agents to valuate
+properties at hand, or act as a reference for home buyers to make smart investments. This project aims to develop a reliable model to predict value of real estate based on a few features of the property.
+
+## 1.1 Dataset and Source
+
+The Real estate valuation data set is used for this project. It has 414 observations and 7 variables plus 1 ID column. The dataset is taken from UCI Machine Learning Depository (https://archive.ics.uci.edu/ml/datasets/Real+estate+valuation+data+set) and contains market historical data of houses price and features from Sindian Dist., New Taipei City, Taiwan.
+
+The dataset is related to the article below:
+Yeh, I. C., & Hsu, T. K. (2018). Building real estate valuation models with comparative approach through case-based reasoning. Applied Soft Computing, 65, 260-271.
+
+Feature Description
+
+1.	No: ID for each observation
+2.	X1: Date of transaction. Represented as a fraction of a year e.g. as 12*0.250=3, 2013.250 equals 2013 March because March is the 3rd month of a year
+3.	X2: Age of house (year)
+4.	X3: Distance to the nearest MRT station (meter)
+5.	X4: Number of convenience stores in the living circle on foot (integer)
+6.	X5: Geographic coordinate, latitude. (degree)
+7.	X6: Geographic coordinate, longitude. (degree)
+8.	Y: The target feature. House price of unit area (10000 New Taiwan Dollar/Ping, where Ping is a local unit, 1 Ping = 3.3 meter squared)
+
+### 1.2 Approach and Methodology
+
+For the purpose of the project, the dataset will be split into training and test sets with 90% of observations in the training set and 10% of observations in the test set, using random sampling. A regression model will then be created using the training set and its performance tested on the test set. 
+For real estate valuation features assumptions below are considered: 
+1.	House price Y is inversely proportional to the age of house. 
+2.	House price Y is inversely proportional to the distance to the nearest MRT station
+3.	House price Y is directly proportional to the number of convenience stores in the living circle on foot. 
+4.	House price Y is directly proportional to the date of transaction.
+5.	House price Y is directly proportional to the latitude.
+6.	House price Y is directly proportional to the longitude.
+
+The validity of assumptions will be tested during the exploration stage of this project. Further, we will proceed with using the regression model developed to make predictions of the real estate valuations.
+
+### 1.3 Packages
+
+```{r}
+
+library(readxl)
+library(car)
+library(stats)
+library(TSA)
+library(olsrr)
+library(dplyr)
+library(ggplot2)
+library(GGally)
+
+```
+
+## 2. Data Preparation
+### 2.1 Import and Explore Data
+
+```{r}
+df <- read_excel("Real estate valuation data set.xlsx")
+head(df,5)
+```
+First, we import Real estate valuation data set.xlsx from the working directory and inspect the first 5 rows of the dataframe. We can see that the index variable `No` is not needed, so we drop it. Also, variable names are too long, so we rename columns shorter with underdash for readability.
+
+```{r}
+Valuation <- df[, -1]
+new_colnames <- c("Transaction_date", "House_age", "Distance_to_MRT", "Convenience_Stores", "Latitude", "Longitude", "House_Price")
+colnames(Valuation) <- new_colnames
+
+```
+
+Then we move on to randomizing the data, and checked the structure of the Evaluation dataframe. All variables of the original Real estate valuation data are numerical. We also checked for missing values and none were found for the Valuation data.
+```{r}
+Valuation <- Valuation[sample(nrow(Valuation)),]
+str(Valuation)
+colSums(is.na(Valuation))
+```
+To inspect relationships between variables, we plotted pairwise scatter plot using `ggpairs`. As shown 
+```{r}
+#Plot pairwise scatter
+ggpairs(Valuation, lower = list(continuous = "smooth"), upper = list(continuous = "cor"),
+        diag = list(continuous = "barDiag"), axisLabels = "show")
+```
+
+```{r}
+
+```
+
+### 2.2. Handling Outliers
+
+```{r}
+#Outlier detection
+par(mfrow = c(2, 2)) 
+for (col in names(Valuation)) {
+  boxplot(Valuation[[col]], main = paste("Boxplot of", col), ylab = col)
+}
+```
+
+```{r}
+#House Price
+# Calculate quartiles and IQR
+Q1_y <- quantile(Valuation$House_Price, 0.25)
+Q3_y <- quantile(Valuation$House_Price, 0.75)
+IQR_y <- Q3_y - Q1_y
+
+# Set outlier range
+outlier_range_y <- c(Q1_y - 1.5 * IQR_y, Q3_y + 1.5 * IQR_y)
+
+# Remove outliers
+
+Valuation_no_outliers_y <- Valuation %>% filter(House_Price>outlier_range_y[1]) %>% filter(House_Price<outlier_range_y[2])
+
+#Distance to MRT
+
+# Calculate quartiles and IQR
+Q1_3 <- quantile(Valuation$Distance_to_MRT, 0.25)
+Q3_3 <- quantile(Valuation$Distance_to_MRT, 0.75)
+IQR_3 <- Q3_3 - Q1_3
+
+# Set outlier range
+outlier_range_3 <- c(Q1_3 - 1.5 * IQR_3, Q3_3 + 1.5 * IQR_3)
+
+# Remove outliers
+
+Valuation_no_outliers_3 <- Valuation_no_outliers %>% filter(Distance_to_MRT>outlier_range_3[1]) %>% filter(Distance_to_MRT<outlier_range_3[2])
+
+
+#latitude
+# Calculate quartiles and IQR
+Q1_5 <- quantile(Valuation$Latitude, 0.25)
+Q3_5 <- quantile(Valuation$Latitude, 0.75)
+IQR_5 <- Q3_5 - Q1_5
+
+# Set outlier range
+outlier_range_5 <- c(Q1_5 - 1.5 * IQR_5, Q3_5 + 1.5 * IQR_5)
+
+# Remove outliers
+
+Valuation_no_outliers_5 <- Valuation_no_outliers_3 %>% filter(Latitude>outlier_range_5[1]) %>% filter(Latitude<outlier_range_5[2])
+#longitude
+# Calculate quartiles and IQR
+Q1 <- quantile(Valuation$Longitude, 0.25)
+Q3 <- quantile(Valuation$Longitude, 0.75)
+IQR <- Q3 - Q1
+
+# Set outlier range
+outlier_range <- c(Q1 - 1.5 * IQR, Q3 + 1.5 * IQR)
+
+# Remove outliers
+
+Valuation_no_outliers_final <- Valuation_no_outliers_5 %>% filter(Longitude>outlier_range[1]) %>% filter(Longitude<outlier_range[2])
+
+
+```
+
+
+#### Factorisation
+
+```{r}
+Valuation_no_outliers_final$Year <- floor(Valuation_no_outliers_final$Transaction_date)
+Valuation_no_outliers_final$Fraction <- Valuation_no_outliers_final$Transaction_date - Valuation_no_outliers_final$Year
+
+Valuation_no_outliers_final$Month <- round(Valuation_no_outliers_final$Fraction * 12)
+Valuation_no_outliers_final$Month[Valuation_no_outliers_final$Month == 0] <- 12
+
+Valuation_no_outliers_final$Year[Valuation_no_outliers_final$Year == 2013 & Valuation_no_outliers_final$Month >= 11] <- 2012
+
+
+colSums(is.na(Valuation_no_outliers_final))
+Valuation_no_outliers_final$Year <- as.factor(Valuation_no_outliers_final$Year)
+Valuation_no_outliers_final$Month <- as.factor(Valuation_no_outliers_final$Month)
+str(Valuation_no_outliers_final)
+
+Valuation_clean <- Valuation_no_outliers_final[, -c(1, 9)]
+Valuation_clean_num <- Valuation_no_outliers_final[, -c(8,9,10)]
+
+```
+### 2.3 Train Test Split
+
+```{r}
+## 90% of the sample size
+sample_size <- floor(0.9 * nrow(Valuation_clean))
+## set the seed to make your partition reproducible
+set.seed(111)
+train_set <- sample(seq_len(nrow(Valuation_clean)), size = sample_size)
+train <- Valuation_clean[train_set, ]
+test <- Valuation_clean[-train_set, ]
+
+```
+
+### 2.3 Train Test Split
+
+```{r}
+
+## set the seed so the partition is reproducible
+set.seed(111)
+train_set_2 <- sample(seq_len(nrow(Valuation_clean_num)), size = sample_size)
+train2 <- Valuation_clean_num[train_set, ]
+test2 <- Valuation_clean_num[-train_set, ]
+```
+
+## 3. Modeling
+### 3.1 Model 1 - Full Model
+
+
+```{r}
+model_full <- lm(House_Price ~ House_age+Distance_to_MRT+Convenience_Stores+Latitude+Longitude+Month, data = train)
+summary(model_full)
+
+```
+The full model is fitted using lm(). The model explains 72.74% variations in y.
+
+E(Y) = -62.970450 + 0.003071`visc` + 7.498028`surf` + 6.225817`base` + 0.522211`fines` - 0.241275`voids` - 5.386297`run` is the equation of best fit relating the response y to the 6 predictors in the asphalt dataset. 
+
+#### 3.1.1 ANOVA
+
+```{r}
+summary_1<-ols_regress(House_Price ~ House_age+Distance_to_MRT+Convenience_Stores+Latitude+Longitude+Month, data = train)
+summary_1
+```
+
+#### 3.1.2 Model Adequacy
+**Plot residuals**
+ 
+```{r}
+model_full$residuals
+#plot residuals
+par(mfrow = c(2,2))
+plot(model_full)
+
+```
+
+In Residual vs Fitted plot for model2 the line is slightly curved and shows small deviation from the horizontal line, with residuals clustered around the line. Based on the plot, is likely that assumption for linearity is violated.
+
+The Q-Q plot shows most residuals following the straight line, with deviation at the both tails. The plot shows that observation 13 is an outlier. It is possible from the Q-Q plot and the assumption of normality might have be violated. 
+
+From the Scale-Location plot, the line is slightly bent and residuals seem to cluster around the two ends of the line. This suggests that it is possible that the assumption of equal variance is violated.
+
+The Residuals vs Leverage plot found observation 13 at upper right corner with high Cook's distance score, so it is influential to the regression results.
+
+Further tests are performed below to test which assumptions are violated.
+
+**Normality error assumption**
+ 
+```{r}
+shapiro.test(model_full$residuals)
+```
+
+\(H_0\): Errors are normally distributed
+
+\(H_1\): Errors are not normally distributed
+
+Output from shapiro test showed p=0.04391, as p<0.05, we reject the null hypothesis. The test result implies that the normality error assumption has been violated.
+
+
+**Constant error variance assumption**
+```{r}
+ncvTest(model_full) 
+
+```
+
+
+\(H_0\): Errors have a constant variance
+
+\(H_1\): Errors have a non-constant variance
+
+Output from non-constant error variance test showed p=0.00027198, since p<0.05, we reject the null hypothesis and conclude that the constant error variance assumption is violated.
+
+
+**Autocorrelated errors**
+```{r}
+acf(model_full$residuals) 
+durbinWatsonTest(model_full)
+```
+
+
+The ACF plot above shows only one significant spike at lag 2, meaning there is autocorrelation between the variable and its value at a lag of 2 time points. To check whether the assumption has been violated we will perform the durbinWatsonTest().
+
+\(H_0\): Errors are uncorrelated
+
+\(H_1\): Errors are correlated
+
+Output from durbinWatsonTest() showed p=0.808, since p>0.05, we fail to reject the null hypothesis and conclude that the assumption that there is no autocorrelation is not violated.
+
+
+**Multicolinearity**
+```{r}
+vif(model_full)
+
+```
+
+A VIF value greater than 1 indicate some level of multicollinearity. In this case, all 3 VIF values are only slightly above 1. Because they are smaller than 5, it indicates that there is no multicolinearity.
+
+### Model 2 - Stepwise
+```{r}
+null_model=lm(House_Price~1, data=train)
+
+step(null_model, scope = list(upper=model_full), data=train, direction="both")
+```
+
+The ANOVA shows an F-statistic of 10.67 and p=8.588e-06, indicating that the regression is significant with alpha=0.05. Output from anova(model1) gives p-values smaller than 0.05 for `visc` and `run`, suggesting that viscosity of rut depth and run indicator are 2 important variables.
+
+
+
+```{r}
+model_2 <- lm(House_Price ~ Distance_to_MRT + House_age + Latitude + 
+    Convenience_Stores + Month, data = train)
+summary(model_2)
+```
+
+#### 3.2.1 ANOVA
+
+```{r}
+summary_2<-ols_regress(House_Price ~ Distance_to_MRT + House_age + Latitude + Convenience_Stores + Month, data = train)
+summary_2
+```
+
+#### Perform all diagnostic tests and check the adequacy of model2
+
+**Plot residuals**
+ 
+```{r}
+model_2$residuals
+#plot residuals
+par(mfrow = c(2,2))
+plot(model_2)
+
+```
+
+In Residual vs Fitted plot for model2 the line is slightly curved and shows small deviation from the horizontal line, with residuals clustered around the line. Based on the plot, is likely that assumption for linearity is violated.
+
+The Q-Q plot shows most residuals following the straight line, with deviation at the both tails. The plot shows that observation 13 is an outlier. It is possible from the Q-Q plot and the assumption of normality might have be violated. 
+
+From the Scale-Location plot, the line is slightly bent and residuals seem to cluster around the two ends of the line. This suggests that it is possible that the assumption of equal variance is violated.
+
+The Residuals vs Leverage plot found observation 13 at upper right corner with high Cook's distance score, so it is influential to the regression results.
+
+Further tests are performed below to test which assumptions are violated.
+
+**Normality error assumption**
+ 
+```{r}
+shapiro.test(model_2$residuals)
+```
+
+\(H_0\): Errors are normally distributed
+
+\(H_1\): Errors are not normally distributed
+
+Output from shapiro test showed p=0.04391, as p<0.05, we reject the null hypothesis. The test result implies that the normality error assumption has been violated.
+
+
+**Constant error variance assumption**
+```{r}
+ncvTest(model_2) 
+
+```
+
+
+\(H_0\): Errors have a constant variance
+
+\(H_1\): Errors have a non-constant variance
+
+Output from non-constant error variance test showed p=0.00027198, since p<0.05, we reject the null hypothesis and conclude that the constant error variance assumption is violated.
+
+
+**Autocorrelated errors**
+```{r}
+acf(model_2$residuals) 
+durbinWatsonTest(model_2)
+```
+
+
+The ACF plot above shows only one significant spike at lag 2, meaning there is autocorrelation between the variable and its value at a lag of 2 time points. To check whether the assumption has been violated we will perform the durbinWatsonTest().
+
+\(H_0\): Errors are uncorrelated
+
+\(H_1\): Errors are correlated
+
+Output from durbinWatsonTest() showed p=0.808, since p>0.05, we fail to reject the null hypothesis and conclude that the assumption that there is no autocorrelation is not violated.
+
+
+**Multicolinearity**
+```{r}
+vif(model_2)
+
+```
+
+A VIF value greater than 1 indicate some level of multicollinearity. In this case, all 3 VIF values are only slightly above 1. Because they are smaller than 5, it indicates that there is no multicolinearity.
+
+
+
+
+
+### 3.3 Model 3
+
+
+```{r}
+r<-leaps::regsubsets(House_Price ~ House_age+Distance_to_MRT+Convenience_Stores+Latitude+Longitude+Month, data = train)
+#plot adjusted R2
+plot(r, scale="adjr2")
+```
+
+To select the best model using All Possible Subsets regression we call regsubsets() from the leaps package. It gives key metrics such as adjusted R-square and BIC value to help us determine what the best model is. 
+
+To select the best model based on their R2 values, we plot `adjr2` values, and observed variable `surf`, `base` and `run` have the highest adjr2 values. We will fit the model below to the asphalt dataset and perform all diagnostic tests and check the adequacy of this model.
+
+### 3.4 Model 4 
+```{r}
+null=lm(House_Price~1, data=train2)
+full=lm(train2$House_Price~., data=train2)
+step(null, scope = list(upper=full), data=train2, direction="both")
+```
+
+Model2 can be written as E(Y) = -62.6005 + 7.4270`surf` + 6.8282`base` - 5.2685`run`. It explains 72.39% variations in y, which is slightly lower than the full model. It has p<0.05, indicating that the regression is significant at alpha=0.05.
+
+```{r}
+model_4=lm(formula = House_Price ~ Distance_to_MRT + House_age + Latitude + Convenience_Stores + Transaction_date, data = train2)
+summary(model_4)
+```
+
+#### 3.4.1 ANOVA
+
+```{r}
+summary_4<-ols_regress(House_Price ~ Distance_to_MRT + House_age + Latitude + Convenience_Stores + Transaction_date, data = train2)
+summary_4
+round(summary_4$f,2)
+summary_4$p
+```
+
+The ANOVA gives a F-statistic of `r round(summary_4$f,2)`  and a p-value of `r summary_4$p` (almost $0$)  suggesting that the regression is significant at 5% level of significance. 
+
+#### 3.4.2
+
+**Plot residuals**
+ 
+```{r}
+model_4$residuals
+#plot residuals
+par(mfrow = c(2,2))
+plot(model_4)
+
+```
+
+In Residual vs Fitted plot for model2 the line is slightly curved and shows small deviation from the horizontal line, with residuals clustered around the line. Based on the plot, is likely that assumption for linearity is violated.
+
+The Q-Q plot shows most residuals following the straight line, with deviation at the both tails. The plot shows that observation 13 is an outlier. It is possible from the Q-Q plot and the assumption of normality might have be violated. 
+
+From the Scale-Location plot, the line is slightly bent and residuals seem to cluster around the two ends of the line. This suggests that it is possible that the assumption of equal variance is violated.
+
+The Residuals vs Leverage plot found observation 13 at upper right corner with high Cook's distance score, so it is influential to the regression results.
+
+Further tests are performed below to test which assumptions are violated.
+
+**Normality error assumption**
+ 
+```{r}
+shapiro.test(model_4$residuals)
+```
+
+\(H_0\): Errors are normally distributed
+
+\(H_1\): Errors are not normally distributed
+
+Output from shapiro test showed p=0.04391, as p<0.05, we reject the null hypothesis. The test result implies that the normality error assumption has been violated.
+
+
+**Constant error variance assumption**
+```{r}
+ncvTest(model_4) 
+
+```
+
+
+\(H_0\): Errors have a constant variance
+
+\(H_1\): Errors have a non-constant variance
+
+Output from non-constant error variance test showed p=0.00027198, since p<0.05, we reject the null hypothesis and conclude that the constant error variance assumption is violated.
+
+
+**Autocorrelated errors**
+```{r}
+acf(model_4$residuals) 
+durbinWatsonTest(model_4)
+```
+
+
+The ACF plot above shows only one significant spike at lag 2, meaning there is autocorrelation between the variable and its value at a lag of 2 time points. To check whether the assumption has been violated we will perform the durbinWatsonTest().
+
+\(H_0\): Errors are uncorrelated
+
+\(H_1\): Errors are correlated
+
+Output from durbinWatsonTest() showed p=0.808, since p>0.05, we fail to reject the null hypothesis and conclude that the assumption that there is no autocorrelation is not violated.
+
+
+**Multicolinearity**
+```{r}
+vif(model_4)
+
+```
+
+A VIF value greater than 1 indicate some level of multicollinearity. In this case, all 3 VIF values are only slightly above 1. Because they are smaller than 5, it indicates that there is no multicolinearity.
+
+
+
+### 4 Model Comparison
+
+
+**i**
+```{r}
+Metrics <- c("Number of variables", "Multiple R-squared",	"Adjusted R-squared" ,
+             "F-statistic","RMSE")
+model_1 <- c(round(summary_1$n-1,0), summary_1$rsq, summary_1$adjr, summary_1$f, sqrt(summary_1$mse))
+model_2 <- c(round(summary_2$n-1,0), summary_2$rsq, summary_2$adjr , summary_2$f , sqrt(summary_2$mse))
+table <- data.frame(Metrics,model_1,model_2 , stringsAsFactors=F)
+colnames(table) <- c("Metrics", "Model 1", "Model 2")
+kable(table) %>% kable_styling(bootstrap_options = "striped", full_width = F)
+
+Comp_pvalue <-anova(model_full,model_2)
+Comp_pvalue
+```
+
+Given xl = 2, x2 = 2, x3 = 1, x4 = 2, x5 = 3, the probability that this person will suffer from byssinosis is 0.04296723.
+
+
+**ii**
+```{r}
+#xl = 1, x2 = 2, x3 = 2, x4 = 1, x5 = 3
+pii <- 1/ (1 + exp(0.4852 + 1.3751*1 - 0.2463*2 + 0.2590*2 + 0.6292*1 - 0.3856*3))
+
+pii
+```
+
+Given xl = 1, x2 = 2, x3 = 2, x4 = 1, x5 = 3, the probability that this person will suffer from byssinosis is 0.2045493.
+
+
+**iii**
+```{r}
+#xl = 2, x2 = 1, x3 = 1, x4 = 2, x5 = 2
+piii <- 1/ (1 + exp(0.4852 + 1.3751*2 - 0.2463*1 + 0.2590*1 + 0.6292*2 - 0.3856*2))
+
+piii
+```
+
+Given xl = 2, x2 = 1, x3 = 1, x4 = 2, x5 = 2, the probability that this person will suffer from byssinosis is 0.0233097.
+
+
+**iv**
+```{r}
+#iv. xl = 3, x2 = 1, x3 = 2, x4 = 2, x5 = 1
+piv <- 1/ (1 + exp(0.4852 + 1.3751*3 - 0.2463*1 + 0.2590*2 + 0.6292*2 - 0.3856*1))
+piv
+```
+
+Given xl = 3, x2 = 1, x3 = 2, x4 = 2, x5 = 1, the probability that this person will suffer from byssinosis is 0.003156909.
+
