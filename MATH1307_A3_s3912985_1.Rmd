@@ -1,0 +1,2947 @@
+---
+title: "MATH1307_A3_s3912985"
+author: "Ting Li"
+date: "2023-10-14"
+output: 
+  pdf_document:
+    toc: true 
+    toc_depth: 3  
+    number_sections: true  
+   
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dLagM)
+library(dplyr)
+library(TSA)
+library(tseries)
+library(car)
+library(dynlm)
+library(Hmisc)
+library(forecast)
+library(lmtest)
+library(Metrics)
+library(ggplot2)
+
+```
+
+# Task 1: Introduction
+
+This report aims to study potential effects of temperature and pollution on disease specific mortality in Paris, France. Utilizing data of mortality (averaged weekly), temperature in Fahrenheit (F), pollutants particle size and two chemical emissions (chem1, chem2) all measured at the same points between 2010-2020, we aim to analyse and forecast 4 weeks ahead for mortality using multiple predictors (multivariate).
+
+This report consists of:
+
+- descriptive analysis, analysis of stationarity and decomposition of components
+- model multiple predictors and find the most suitable model in terms of R squared, AIC, BIC, MASE, using DLM, ARDL, polyck, koyck, dynamic, exponential smoothing and state-space model
+- provide the point forecasts and confidence intervals and corresponding plot for the most optimal model 
+
+
+# Data description
+### Import data
+
+First, we import data from the working directory and inspect the data. After dropping the index column, there are 5 variables measured at the same points between 2010 and 2020:
+- disease specific averaged weekly mortality `mortality` in Paris
+- city’s local climate (temperature degrees Fahrenheit) `temp`
+- levels of chemical emission from cars and industry in the air of `chem1`
+- levels of chemical emission from cars and industry in the air of `chem2`
+- pollutants particle size `particle.size`  
+There are 508 observations in the dataset with no missing values. All variables are numeric and positive.
+
+```{r}
+setwd("/Users/momo/Desktop/Master of Analytics/SEM2 2023/Forecasting/Forecasting A3")
+source('GoFVals.R')
+source('pVal.R')
+source('LEIC.R')
+source('MASEvalues.R')
+source('MATH1307_utilityFunctions.R')
+mort = read.csv("mort.csv")
+class(mort)
+tail(mort)
+mort = mort[-1] #drop index column
+summary(mort)
+#check for null and NA 
+anyNA(mort)
+is.null(mort)
+```
+
+### Convert data to time series objects
+
+We create time series objects for `mortality`, `temp`, `chem1`, `chem2`, `size` (short for `particle.size`) using ts(). Since data is weekly, we specify frequency as 52. Individual time series objects will be used to plot and inspect existence of trend, seasonality, changing variance, moving average and autoregression behavior, and intervention. We will also scale the data and create a time series object for the full series with 5 variables. So we could visually inspect their correlation by plotting all variables side by side.
+
+```{r}
+#individual ts objects
+mortality=ts(mort$mortality,start=2010, frequency=52)
+temp=ts(mort$temp,start=2010,frequency=52)
+chem1=ts(mort$chem1,start=2010,frequency=52)
+chem2=ts(mort$chem2,start=2010,frequency=52)
+size=ts(mort$particle.size,start=2010,frequency=52)
+#full series
+mort.ts=ts(mort,start=2010,frequency=52)
+```
+
+# Data exploration
+
+## Create user-defined function
+
+User-defined functions are created to reduce repetation of the same code chuncks, with ts_analysis() for plotting individual time series objects, ACF and PACF plots, and stationarity_test for testing existence of non-stationarity.
+Stationarity test used in the function are unit root tests: ADF test and PP test. Null hypothesis for both tests is that the series is non-stational.
+
+```{r}
+#Creating a function for descriptive plots
+ts_analysis <- function(data, ylab,title, acf_title, pacf_title) {
+  
+  # Plot ts
+  plot(data, xlab = "Year", ylab = ylab, main = title)
+  points(y = data, x = time(data), pch=20, col = rainbow(frequency(data)))
+  
+  # ACF and PACF 
+ 
+  acf(data, lag.max = 100, main = acf_title)
+  pacf(data, lag.max = 100, main = pacf_title)
+}
+
+#Creating a function for a set of stationarity test
+stationarity_test <- function(data){
+  print(adf.test(data))
+  print(pp.test(data))
+}
+
+```
+
+
+
+## Variable: weekly mortality
+### Plot `mortality` and check for stationarity
+The first variable to inspect is weekly mortality. Upon visual inspection of Figure 1.1, 1.2 and 1.3, variable `mortality` has:
+
+- no obvious sign of intervention however data had unusual spike around late 2012 to early 2013
+- overall there might be a downwards trend from 2010 to 2020
+- pattern in Figure 1.2 and color coding suggests seasonality
+- no obvious sign of changing variance
+- no obvious sign of autoregression 
+
+
+```{r}
+ts_analysis(data = mortality, title = "Figure 1.1 Time series plot of weekly mortality.",
+            ylab = "weekly mortality", 
+            acf_title = "Figure 1.2 ACF for weekly mortality", 
+            pacf = "Figure 1.3 PACF for weekly mortality")
+```
+
+
+As ADF test and PP unit root test result have p-value<0.05, we reject the null hypothesis that the series is
+non-stational and conclude that the series is stational. 
+```{r}
+stationarity_test(mortality)
+```
+
+
+### Decomposition
+
+We decompose the series to inspect impact of components: trend, seasonality, and remainders. Fig.1.4 shows STL decomposition of weekly mortality in Paris. From the trend component, we could observe fluctuation over time with a slight downward trend. Existence of seasonality was confirmed from inspecting the time series plot. Spikes in remainder means they are caused by components other than trend and seasonality. Size of grey bars suggests that out of the 3 components, remainder has the most impact on data, followed by the seasonal component, and trend component has the smallest impact on data.
+
+```{r}
+fit.mortality <- stl(window(mortality), t.window=52, s.window="periodic", 
+                 robust=TRUE)
+plot(fit.mortality, main = "Figure 1.4 STL Decomposition of weekly mortality")
+```
+
+### Seasonal differencing
+
+We attempt to remove seasonality by differencing with lag=52 in `mortality` to reflect the frequency (weekly). From Fig. 1.5 we can see that seasonality is no longer obvious in the seasonally-differenced time series of mortality. We will attempt to fit models with the seasoanlly-differenced series if models can't capture seasonality well.
+
+```{r}
+# First seasonal difference with period 52
+mortality.diff = diff(mortality,lag = 52)
+
+plot(mortality.diff,main = "Figure 1.5 Time series plot of weekly mortality after seasonal differercning")
+points(y=mortality.diff, x=time(mortality.diff), pch=20, col=rainbow(52))
+
+```
+## Variable: temp
+
+### Plot `temp` and check for stationarity
+
+The next variable to inspect is climate `temp`. Upon visual inspection of Fig. 2.1, 2.2, 2.3, variable `temp` has:
+
+- over the time period, there is no obvious sign of trend 
+- color coding and patterns in Fig. 2.2 suggests seasonality
+- no obvious signs of changing variance
+- no obvious signs of intervention
+- no obvious signs of autoregression
+
+```{r}
+#temp
+ts_analysis(data = temp, title = "Figure 2.1 Time series plot of temperature (F).",
+            ylab = "Temperature (F)", acf_title = "Figure 2.2 ACF for temperature", 
+            pacf = "Figure 2.3 PACF for temperature")
+
+```
+
+Results from adf and pp unit root test have p-value<0.05, so we reject H0 and conclude that the series is stational. 
+
+```{r}
+stationarity_test(temp)
+```
+
+### Decomposition
+
+Fig.2.4 shows STL decomposition of temperature (F). The trend component shows flucturations with no obvious overall trend. Existence of seasonality has been confirmed from inspecting the time series plot and ACF plot. Spikes in remainders were caused by components other than trend and seasonality. Observation on the grey bar suggests that out of the 3 components, remainder has the most impact on data, followed by the seasonal component, and the trend component has the smallest impact on the series.
+
+```{r}
+fit.temp <- stl(window(temp), t.window=52, s.window="periodic",
+               robust=TRUE)
+plot(fit.temp, main = "Figure 2.4 STL Decomposition of temperature (F)")
+```
+
+### Seasonal differencing
+
+Seasonal differencing was applied as an attempt to remove from the `temp`. We set lag = 52 as data is weekly. Fig. 2.5 shows that seasonality has been removed from the temperature series after differencing. We will attempt to fit models with the seasonally differenced `temp` series in the model fitting section if needed.
+
+```{r}
+temp.diff = diff(temp,lag = 52)
+
+plot(temp.diff,main = "Figure 2.5 Time series plot of temperature (F) after seasonal differercning")
+points(y=temp.diff, x=time(temp.diff), pch=20, col=rainbow(52))
+
+```
+
+
+## Variable: chem1
+
+### Plot `chem1` and check for stationarity
+
+The next variable to inspect is emmision of `chem1`. Upon visual inspection of Fig. 3.1, 3.2, 3.3, variable `chem1` has:
+
+- over the time period, there is seems to be an downwards trend 
+- color coding and patterns in Fig 3.2 suggests seasonality
+- there seems to be changing variance over the time period
+- no obvious signs of intervention
+- no obvious signs of autoregression
+
+```{r}
+#temp
+ts_analysis(data = chem1, title = "Figure 3.1 Time series plot of chem1 emmision.",
+            ylab = "chem1 emmision", acf_title = "Figure 3.2 ACF for chem1", 
+            pacf = "Figure 3.3 PACF for chem1")
+
+```
+
+Results from adf and pp unit root test have p-value<0.05, so we reject H0 and conclude that the series is stational (no unit roots). 
+
+```{r}
+stationarity_test(chem1)
+```
+
+### Decomposition
+
+Figure 3.4 shows STL decomposition of chem1 emission. The trend component shows overall downward trend. Existence of seasonality has been confirmed from inspecting the time series plot and ACF plot. Spikes in remainders were caused by components other than trend and seasonality. Observation on the grey bar suggests that out of the 3 components, remainder has the most impact on data, followed by the seasonal component, and the trend component has the smallest impact on the series.
+
+```{r}
+fit.chem1 <- stl(window(chem1), t.window=52, s.window="periodic",
+               robust=TRUE)
+plot(fit.chem1, main = "Figure 3.4 STL Decomposition of chem1 emission")
+```
+
+### Seasonal differencing
+
+Seasonal differencing was applied as an attempt to remove from the `chem1`. We set lag = 52 as data is weekly.Figure 3.5 shows that seasonality has been removed from the chem1 series after differencing. We will attempt to fit models with the seasonally differenced `temp` series in the model fitting section if needed.
+
+```{r}
+chem1.diff = diff(chem1,lag = 52)
+
+plot(chem1.diff,main = "Fig.3.5 Time series plot of chem1 emission after seasonal differercning")
+points(y=chem1.diff, x=time(chem1.diff), pch=20, col=rainbow(52))
+
+```
+
+
+## Variable: chem2
+
+### Plot `chem2` and check for stationarity
+
+The next variable to inspect is emission of `chem2`. Upon visual inspection of Fig. 4.1, 4.2, 4.3, variable `chem2` has:
+
+- over the time period, there seems to be a downward trend 
+- no obvious sign of seasonality
+- no obvious sign of changing variance
+- no obvious sign of intervention
+- no obvious sign of autoregression
+
+```{r}
+#chem2
+ts_analysis(data = chem2, title = "Fig. 4.1 Time series plot of chem2 emission.",
+            ylab = "Chem2 emission", acf_title = "Fig. 4.2 ACF for chem2 emission", 
+            pacf = "Fig. 4.3 PACF for chem2 emission")
+
+```
+Test result of ADF and PP unit root test have p-value<0.05, so we reject H0 and conclude that the series is stational. 
+
+```{r}
+stationarity_test(chem2)
+```
+
+### Decomposition
+
+Fig. 4.4 below shows STL decomposition of chem2 emission. The trend component shows an overall downward trend. Patterns in the seasonal component do not mean existence of seasonality, as confirmed earlier during visual inspection. Spikes in remainders were caused by components other than trend and seasonality. Observation on the grey bar suggests that out of the 3 components, remainders has the most impact on data, followed by the trend component, and the seasonality component has the smallest impact on the series.
+
+```{r}
+fit.chem2 <- stl(window(chem2), t.window=52, s.window="periodic",
+               robust=TRUE)
+plot(fit.chem2, main = "Fig. 4.4 STL Decomposition of chem2 emission")
+```
+
+
+
+## Variable: size (particle.size)
+
+### Plot `size` and check for stationarity
+
+The next variable to inspect is pollutant particle size, `size`. Upon visual inspection of Fig. 5.1, 5.2, 5.3, variable `size` has:
+
+- over the time period, there is no obvious sign of trend 
+- color coding and patterns in Fig. 5.2 suggests seasonality
+- no obvious signs of changing variance
+- no obvious signs of intervention
+- no obvious signs of autoregression
+
+```{r}
+#particle size 
+ts_analysis(data = size, title = "Fig. 5.1 Time series plot of pollutant particle size.",
+            ylab = "pollutant particle size", acf_title = "Fig. 5.2 ACF for pollutant particle size", 
+            pacf = "Fig. 5.3 PACF for pollutant particle size")
+
+```
+
+Results from adf and pp unit root test have p-value<0.05, so we reject H0 and conclude that the series is stational. 
+
+```{r}
+stationarity_test(size)
+```
+
+### Decomposition
+
+Fig. 5.4 below shows STL decomposition of pollutant particle size. The trend component shows no obvious overall trend. Existence of seasonality has been confirmed from inspecting the time series plot and ACF plot. Spikes in remainders were caused by components other than trend and seasonality. Size of grey bars suggests that out of the 3 components, remainder has the most impact on data, followed by the seasonal component, and the trend component has the smallest impact on the series.
+
+```{r}
+fit.size <- stl(window(size), t.window=52, s.window="periodic",
+               robust=TRUE)
+plot(fit.size, main = "Fig. 5.4 STL Decomposition of pollutant particle size")
+```
+
+### Seasonal differencing
+
+Seasonal differencing was applied as an attempt to remove from the `size`. We set lag = 52 as data is weekly.Fig. 5.5 below shows that seasonality has been removed from the pollutant particle size series after differencing. We will attempt to fit models with the seasonally differenced `temp` series in the model fitting section if needed.
+
+```{r}
+size.diff = diff(size,lag = 52)
+
+plot(size.diff,main = "Fig. 5.5 Time series plot of pollutant particle size after seasonal differercning")
+points(y=size.diff, x=time(size.diff), pch=20, col=rainbow(52))
+
+```
+
+## Relationship among variables
+
+After inspecting variables individually, we move on to plotting all 5 variables side by side, to
+explore the relationship within the series. First, we performed scaling to standardize and plot 5 variables on the same scale.
+
+Although it may be hard to see, Fig. 6. has shown a positive correlation between the red line `chem1` and and black line `particle size`. We calculate the correlation matrix among the 5 variables as visual inspection from Fig.6 is unclear, and the result shows a strong positive correlation between chemical1 emission and pollutant particle size, and moderate positive correlation with `chem2`. Mortality has a moderate negative correlation with temperature, moderate positive correlation with chemical 1 emission and particle size, and weak positive correlation with chemical 2 emission. Temperature has moderate positive correlation with chemical 2 emission, and close to 0 negative correlation with chem1 and particle size. `chem2` has moderate positive correlation with particle size.
+
+
+```{r}
+#plot side by side to see correlation
+
+mort.scale = scale(mort.ts)
+plot(mort.scale, plot.type="s", col=c("blue","gold","red", "purple","black"), 
+     main = "Fig. 6. Mortality series")
+legend("topleft", lty=1,cex=0.5,text.width=0.5
+       ,col=c("blue",  "gold","red","purple","black"),
+       c("mortality", "temp", "chem1", "chem2", "size"))
+
+cor(mort.ts)#correlation
+```
+
+# Model fitting and diagnostic checking
+
+Next, we perform model fitting using time series regression methods, dynamic linear models, exponential smoothing and corresponding state-space models to find the most suitable model for forecasting the weekly averaged mortality in Paris in terms of AIC, BIC, MASE and R-squared values. 
+
+As we are fitting a large amount of models, we will select the best model for each method based on AIC, BIC, MASE and R-squared values and perform diagnostic checks on shortlisted model or models only.
+
+## Create user defined function for diagnostic checking
+
+The first user-defined function was created to perform checks including checkresiduals(), bgtest(), shapiro.test() and vif() to streamline the process of diagnostic checks. 
+
+The second user-defined function `shortlist` was created to check AIC, BIC and MASE values for numerous models fitted, to shortlist the best model fitted with each method. 
+
+```{r}
+diagnostic_check <- function(model){
+checkresiduals(model)
+if (is.numeric(model$model$residuals)==TRUE) {print(shapiro.test(model$model$residuals))} 
+if (is.numeric(model$model$residuals)==FALSE) {print(shapiro.test(model$residuals))}
+
+print(bgtest(model$model))
+print("VIF:")
+print(vif(model$model))
+}
+
+shortlist <- function(x, score = c("bic", "aic","mase")){
+  if (score == "aic"){
+    x[with(x, order(AIC)),]
+  } else if (score == "bic") {
+    x[with(x, order(BIC)),]
+  } 
+    else if (score == "mase") {
+    x[with(x, order(MASE)),]
+  } 
+  else {
+    warning('score = "x" only accepts valid arguments ("aic","bic","mase")')
+  }
+}
+
+```
+
+
+## Time series regression models
+
+To find the most suitable model for forecasting weekly averaged mortality, we attempt to fit models using the time series regression method. 
+
+### Finite distributed lag model
+
+First we fit finite distributed lag model using for loops, and get their AIC and BIC scores and MASE values. We attempt multiple explanatory variables with the dependent variable `mortality`, and found that the lowest AIC, BIC scores and MASE value occur at q= 12. 
+
+```{r}
+for(i in 1:12){
+model1=dlm(x=as.vector(temp+chem1+chem2+size), y=as.vector(mortality),q=i)
+cat("q=",i,"AIC=",AIC(model1$model), "BIC=",BIC(model1$model), "MASE=", MASE(model1)$MASE,"\n")
+
+}
+
+```
+*Model fitting* 
+ 
+We now fit models with the optimal q=12 obtained from the for loop, using multiple predictors.
+ 
+```{r}
+
+model1.tempchem1=dlm(x=as.vector(temp+chem1), y=as.vector(mortality),q=12)
+model1.tempchem2=dlm(x=as.vector(temp+chem2), y=as.vector(mortality),q=12)
+model1.tempsize=dlm(x=as.vector(temp+size), y=as.vector(mortality),q=12)
+model1.chem12=dlm(x=as.vector(chem1+chem2), y=as.vector(mortality),q=12)
+model1.chem1size=dlm(x=as.vector(chem1+size), y=as.vector(mortality),q=12)
+model1.chem2size=dlm(x=as.vector(chem2+size), y=as.vector(mortality),q=12)
+
+model1.tempchem1size=dlm(x=as.vector(temp+chem1+size), y=as.vector(mortality),q=12)
+model1.tempchem2size=dlm(x=as.vector(temp+chem2+size), y=as.vector(mortality),q=12)
+model1.tempchem12=dlm(x=as.vector(temp+chem1+chem2), y=as.vector(mortality),q=12)
+model1.chem12size=dlm(x=as.vector(chem1+chem2+size), y=as.vector(mortality),q=12)
+model1.all=dlm(x=as.vector(temp+chem1+chem2+size), y=as.vector(mortality),q=12)
+```
+
+*Shortlisitng*
+
+We now sort models by their AIC, BIC and MASE to find the best fitted model using this method. The function was user-defined. 
+
+Model1.chem12 has the best fit out of all finite distributed lag models, with AIC=3287, BIC=3350, MASE=0.92 (MASE<1 shows better fit than the average one-step naive forecast). We move on to checking summary and residuals of model1.chem1.
+
+```{r}
+aic = AIC(model1.tempchem1$model, model1.tempchem2$model, model1.tempsize$model,
+          model1.chem12$model, model1.chem1size$model, model1.chem2size$model, 
+          model1.tempchem1size$model, model1.tempchem2size$model, model1.tempchem12$model, 
+          model1.chem12size$model, model1.all$model)
+bic = BIC(model1.tempchem1$model, model1.tempchem2$model, model1.tempsize$model, 
+          model1.chem12$model, model1.chem1size$model, model1.chem2size$model,
+          model1.tempchem1size$model, model1.tempchem2size$model, model1.tempchem12$model, 
+          model1.chem12size$model, model1.all$model)
+mase = MASE(model1.tempchem1, model1.tempchem2, model1.tempsize, model1.chem12, 
+            model1.chem1size, model1.chem2size, model1.tempchem1size, 
+            model1.tempchem2size, model1.tempchem12, model1.chem12size, model1.all)
+
+shortlist(aic,score = "aic")
+shortlist(bic,score = "bic")
+shortlist(mase,score = "mase")
+```
+ 
+*Diagnostic check*
+
+Model1.chem12 has R^2=0.576 at 5% significance level. The Breusch-Godfrey(bg) test checks whether there is serial correlation of any order up to the displayed order (H0=no serial correlation), as p<0.05, we reject the null hypothesis and conclude that there is serial correlation up to the displayed order, which is confirmed in residual plots where serial correlation is still obvious. 
+
+No seasonality is left in residuals. Histogram and shapiro-wilk test shows that residuals not normal. Variance inflation factors (VIFs) were used to inspect multicollinearity. VIF result for model1.chem12 shows minimal multicollinearity with VIF < 10,  meaning all coeffecients are not under high effect of multicollinearity.
+
+```{r}
+
+summary(model1.chem12)
+diagnostic_check(model1.chem12)
+
+```
+
+### Polynomial model
+
+Polynomial distributed lag model reduces the effect of multicollinearity. For loops returned lag q =12 with the lowest MASE and AIC, BIC values. So we fit models using multiple predictors using q=12 and specify k=2 as second order polynomial is used.
+
+```{r}
+
+for(i in 2:12){
+model2=polyDlm(x=as.vector(temp+chem1+chem2+size), y=as.vector(mortality), q = i,
+               k = 2, show.beta = FALSE)
+cat("q=",i,"AIC=",AIC(model2$model), "BIC=",BIC(model2$model), "MASE=",
+    MASE(model2)$MASE,"\n")
+}
+```
+
+*Model fitting* 
+
+```{r}
+
+
+model2.tempchem1 = polyDlm(x = as.vector(temp + chem1), y = as.vector(mortality),
+                           q = 12, k = 2, show.beta = FALSE)
+model2.tempchem2 = polyDlm(x = as.vector(temp + chem2), y = as.vector(mortality), 
+                           q = 12, k = 2, show.beta = FALSE)
+model2.tempsize = polyDlm(x = as.vector(temp + size), y = as.vector(mortality), 
+                          q = 12, k = 2, show.beta = FALSE)
+model2.chem12 = polyDlm(x = as.vector(chem1 + chem2), y = as.vector(mortality), 
+                        q = 12, k = 2, show.beta = FALSE)
+model2.chem1size = polyDlm(x = as.vector(chem1 + size), y = as.vector(mortality), 
+                           q = 12, k = 2, show.beta = FALSE)
+model2.chem2size = polyDlm(x = as.vector(chem2 + size), y = as.vector(mortality), 
+                           q = 12, k = 2, show.beta = FALSE)
+
+model2.tempchem1size = polyDlm(x = as.vector(temp + chem1 + size), y = as.vector(mortality), 
+                               q = 12, k = 2, show.beta = FALSE)
+model2.tempchem2size = polyDlm(x = as.vector(temp + chem2 + size), y = as.vector(mortality), 
+                               q = 12, k = 2, show.beta = FALSE)
+model2.tempchem12 = polyDlm(x = as.vector(temp + chem1 + chem2), y = as.vector(mortality), 
+                            q = 12, k = 2, show.beta = FALSE)
+model2.chem12size = polyDlm(x = as.vector(chem1 + chem2 + size), y = as.vector(mortality), 
+                            q = 12, k = 2, show.beta = FALSE)
+model2.all = polyDlm(x = as.vector(temp + chem1 + chem2 + size), y = as.vector(mortality), 
+                     q = 12, k = 2, show.beta = FALSE)
+```
+
+*Shortlisting*
+
+Sorting of metrics shows that model2.chem12 (fitted with `chem1`, `chem2`) returns the lowest AIC, BIC and MASE values, so it is the best fitted model using polydlm. 
+
+```{r}
+aic = AIC(model2.tempchem1$model, model2.tempchem2$model, model2.tempsize$model,
+          model2.chem12$model, model2.chem1size$model, model2.chem2size$model, 
+          model2.tempchem1size$model, model2.tempchem2size$model, model2.tempchem12$model, 
+          model2.chem12size$model, model2.all$model)
+
+bic=BIC(model2.tempchem1$model, model2.tempchem2$model, model2.tempsize$model, 
+        model2.chem12$model, model2.chem1size$model, model2.chem2size$model, 
+        model2.tempchem1size$model, model2.tempchem2size$model, model2.tempchem12$model, 
+        model2.chem12size$model, model2.all$model)
+
+mase=MASE(model2.tempchem1, model2.tempchem2, model2.tempsize, model2.chem12, 
+          model2.chem1size, model2.chem2size, model2.tempchem1size, model2.tempchem2size,
+          model2.tempchem12, model2.chem12size, model2.all)
+
+shortlist(aic,score = "aic")
+shortlist(bic,score = "bic")
+shortlist(mase,score = "mase")
+```
+
+*Diagnostic check*
+
+Model2.chem12 has AIC=3289, BIC=3310, MASE=0.94, and R-squared = 0.566. MASE < 1 suggest a better fit than the naive method. It is significant at 5% significance level but only explains 56.6% variabilities in `mortality`. Serial correlation were not captured by the model as shown in residuals and result of BG test (p<0.05). All coefficients have VIF way above 10, suggesting very high effect of multicollinearity. No seasonality is left in residuals.
+
+```{r}
+summary(model2.chem12)
+diagnostic_check(model2.chem12)
+```
+
+
+### Koyck model
+
+The Koyck distributed lag model assumes more recent lagged values of independent variables have a greater impact on the dependent variable than those that are further back in time.
+
+Results from fitting Model3 suggest a worse fit than the naive method with MASE = 1.03. Model3 is significant and has R square value 0.76.  Residuals show clear seasonal pattern and serial correlation. VIF close to 1 suggests no multicollinearity.
+
+```{r}
+model3.tempchem1 = koyckDlm(x = as.vector(temp + chem1), y = as.vector(mortality))
+model3.tempchem2 = koyckDlm(x = as.vector(temp + chem2), y = as.vector(mortality))
+model3.tempsize = koyckDlm(x = as.vector(temp + size), y = as.vector(mortality))
+model3.chem12 = koyckDlm(x = as.vector(chem1 + chem2), y = as.vector(mortality))
+model3.chem1size = koyckDlm(x = as.vector(chem1 + size), y = as.vector(mortality))
+model3.chem2size = koyckDlm(x = as.vector(chem2 + size), y = as.vector(mortality))
+model3.tempchem1size = koyckDlm(x = as.vector(temp + chem1 + size), y = as.vector(mortality))
+model3.tempchem2size = koyckDlm(x = as.vector(temp + chem2 + size), y = as.vector(mortality))
+model3.tempchem12 = koyckDlm(x = as.vector(temp + chem1 + chem2), y = as.vector(mortality))
+model3.chem12size = koyckDlm(x = as.vector(chem1 + chem2 + size), y = as.vector(mortality))
+model3.all = koyckDlm(x = as.vector(temp + chem1 + chem2 + size), y = as.vector(mortality))
+```
+
+*Shortlisting*
+
+Sorting function shows that model3.chem12 (fitted with `chem1`, `chem2`) returns the lowest MASE values, so it is the best fitted model using koyck method. 
+
+```{r}
+
+mase=MASE(model3.tempchem1, model3.tempchem2, model3.tempsize, model3.chem12, 
+          model3.chem1size, model3.chem2size, model3.tempchem1size, model3.tempchem2size, 
+          model3.tempchem12, model3.chem12size, model3.all)
+
+shortlist(mase,score = "mase")
+```
+
+*Diagnostic check*
+
+Model3.chem12 has MASE=0.88, and R-squared = 0.647, which is an improved fit than the previous 2 methods. However, serial correlation is still shown in residuals and confirmed by result of BG test (p<0.05). Low VIF value shows minimal effect of multicollinearity. No seasonality is left in residuals. Shapiro-wilk test result and histogram suggest that residuals are normally distributed.
+
+```{r}
+summary(model3.chem12, diagnostics = TRUE)
+diagnostic_check(model3.chem12)
+```
+
+
+### Autoregressive dlm
+
+The autoregressive distributed lag model recognizes that dependent variable Y could be influence by its own past values and past values of independent variable. Overall, the for loop found p=12 and q=2 returns the best AIC and BIC and a relatively small MASE value.
+
+```{r} 
+for(i in 1:12){
+  for(j in 1:12){
+    model4 = ardlDlm(x=as.vector(temp+chem1+chem2+size), y=as.vector(mortality), 
+                     p = i, q = j)
+    cat("p = ", i, "q = ", j, "AIC = ", AIC(model4$model), "BIC = ", BIC(model4$model),
+        "MASE=", MASE(model4)$MASE, "\n")
+  }
+}
+
+```
+
+*Model fitting*
+
+Now we fit multiple predictors using p=12 and q=2 found from the for loop.
+
+```{r}
+
+model4.tempchem1 = ardlDlm(x = as.vector(temp + chem1), y = as.vector(mortality),
+                           p = 12, q = 2)
+model4.tempchem2 = ardlDlm(x = as.vector(temp + chem2), y = as.vector(mortality), 
+                           p = 12, q = 2)
+model4.tempsize = ardlDlm(x = as.vector(temp + size), y = as.vector(mortality), 
+                          p = 12, q = 2)
+model4.chem12 = ardlDlm(x = as.vector(chem1 + chem2), y = as.vector(mortality), 
+                        p = 12, q = 2)
+model4.chem1size = ardlDlm(x = as.vector(chem1 + size), y = as.vector(mortality), 
+                           p = 12, q = 2)
+model4.chem2size = ardlDlm(x = as.vector(chem2 + size), y = as.vector(mortality), 
+                           p = 12, q = 2)
+model4.tempchem1size = ardlDlm(x = as.vector(temp + chem1 + size), y = as.vector(mortality), 
+                               p = 12, q = 2)
+model4.tempchem2size = ardlDlm(x = as.vector(temp + chem2 + size), y = as.vector(mortality),
+                               p = 12, q = 2)
+model4.tempchem12 = ardlDlm(x = as.vector(temp + chem1 + chem2), y = as.vector(mortality), 
+                            p = 12, q = 2)
+model4.chem12size = ardlDlm(x = as.vector(chem1 + chem2 + size), y = as.vector(mortality), 
+                            p = 12, q = 2)
+model4.all = ardlDlm(x = as.vector(temp + chem1 + chem2 + size), y = as.vector(mortality), 
+                     p = 12, q = 2)
+```
+
+*Shortlisting*
+
+We calculate AIC, BIC, and MASE for the fitted models using ardlDlm() and sort scores to shortlist the best model fitted based on these metrics. Model4.chem12 was shortlisted with the lowest AIC, BIC and MASE.
+
+```{r}
+aic=AIC(model4.tempchem1$model, model4.tempchem2$model, model4.tempsize$model, 
+        model4.chem12$model, model4.chem1size$model, model4.chem2size$model, 
+        model4.tempchem1size$model, model4.tempchem2size$model, model4.tempchem12$model, 
+        model4.chem12size$model, model4.all$model)
+
+bic=BIC(model4.tempchem1$model, model4.tempchem2$model, model4.tempsize$model, 
+        model4.chem12$model, model4.chem1size$model, model4.chem2size$model, 
+        model4.tempchem1size$model, model4.tempchem2size$model, model4.tempchem12$model,
+        model4.chem12size$model, model4.all$model)
+
+mase=MASE(model4.tempchem1, model4.tempchem2, model4.tempsize, model4.chem12, 
+          model4.chem1size, model4.chem2size, model4.tempchem1size, model4.tempchem2size, 
+          model4.tempchem12, model4.chem12size, model4.all)
+
+shortlist(aic,score = "aic")
+shortlist(bic,score = "bic")
+shortlist(mase,score = "mase")
+```
+
+*Diagnostic check*
+
+Model4.chem12 was fitted with p=12 and q=2 and has AIC=3069, BIC=3140, MASE = 0.759 and R-squared=0.728. Among all time series regression models, this model is the best fitted model. Model4.chem12 is significant and explains 75.9% of variability in the series. 
+
+From residuals, The ACF plot of residuals has most values within the line with no seasonal patterns. P-value of Breusch-Godfrey test is 0.78, so we fail to reject H0 and conclude that there is no serial correlation of order up to 1. From this we can conclude that the model has captured underlying patterns in the data. However, shapiro-wilk test result suggests that residuals do not follow normal distribution with p-value < 0.05. Test values for VIF suggests very low multicollinearity. 
+
+```{r}
+summary(model4.chem12)
+diagnostic_check(model4.chem12)
+```
+
+
+Overall, Model4.chem12 is the best time series regression model with AIC=3069, BIC=3140, MASE = 0.759 and R-squared=0.728, to be included in the Model Selection section. Model 4.chem12 is fitted with the original variables.
+
+
+## Dynamic linear regression models (dynlm)
+
+The dynamic linear regression methods address multicollinearity and seasonality better in the data. We now fit the series using dynamic linear regression models with Y.t = mortality. To calculate MASE values, we use the mase() function from the `Metrics` package for all dynlm models. We use which.max() to find the when the spike occurred in the `mortality` series as it might be a possible intervention, at week 151. S.t is the step function whose value is 0 before T. After T (week151) the step function takes value 1. S.t.1 is the fisrt lag of the step function.
+
+Model5.1 was fitted with all predictors, the first lag of Y.t, S.t, S.t.1, trend and seasonality. An Adjusted R-squared value of 0.726 suggest a okay fit, however, `chem1+chem2++size` were found to be insignificant in the model. 
+
+```{r}
+
+Y.t = mortality
+T <-which.max(mortality) 
+S.t = 1*(seq(Y.t) >= T) 
+S.t.1 = Lag(S.t,+1)
+
+model5.1 = dynlm(Y.t ~ +temp+chem1+chem2++size+L(Y.t , k = 1 ) + S.t + S.t.1 + 
+                   trend(Y.t) + season(Y.t))
+summary(model5.1)
+```
+
+Therefore, we fit model5.2 and model 5.3 without them, note that in model 5.3 we use the second lag of Y.t. Fit of model 5.2 and 5.3 has improved. Now we explore whether fit can be improved by adding more lags of Y.t.
+
+```{r}
+model5.2 = dynlm(Y.t ~ +temp+L(Y.t , k = 1 ) + S.t + S.t.1 + trend(Y.t) + season(Y.t))
+summary(model5.2)
+model5.3 = dynlm(Y.t ~ +temp+L(Y.t , k = 2 ) + S.t + S.t.1 + trend(Y.t) + season(Y.t))
+summary(model5.3)
+
+```
+
+We created a for loop in Assignent2 with dynamic number of variables and plot how MASE is influenced as each lag of Y.t is added to the model, starting with more recent to those further back in time (Meys, 2011). To calculate MASE, we input predicted value using fitted model and the actual `mortality` series. 
+
+Form Fig.7, we observed an overall decreasing trend on MASE values as more lags of Y.t are added to the model, starting with a drop when from the 1st to 2nd lag of Y.t, and a flatter slope afterwards. To avoid overfitting and overcomplicating the model, we decided to keep up to the 2nd lag of Y.t in the model as the addition of more lags improve the fit less obviously.
+
+```{r}
+#formula for dynamic number of variables extracted from stackoverflow  https://stackoverflow.com/questions/4951442/formula-with-dynamic-number-of-variables
+
+MASE = numeric(24)
+for (i in 1:24){
+  formula <- as.formula(paste("Y.t ~", paste("L(Y.t, k=", 1:i, ")", collapse=" + "), 
+                              "+temp","+S.t ","+ S.t.1"," + trend(Y.t)", "+ season(Y.t)"))
+  model = dynlm(formula)
+  predicted_value = fitted(model)
+  MASE[i] = mase(mortality, predicted_value, step_size = 1)
+}
+
+MASE.dynlm <- data.frame(lags = 1:24, MASE = MASE)
+
+# Plot MASE values against lags
+ggplot(MASE.dynlm, aes(x=lags, y=MASE)) +
+  geom_line() +
+  geom_point() +
+  labs(title="Fig. 7 MASE values for increasing lags on Y.t",
+       x="Lags",
+       y="MASE") 
+
+```
+
+
+Model 5.4 was fitted with temp, the 1st and 2nd lag of Y.t, S.t, S.t.1, trend, seasonality as a result of for loop above. It has R-squared=0.764 and MASE below 0.68. Residuals show no serial correlation with ACF plot and BG test result, and histogram of residuals seem to follow normal distribution. We now explore whether MASE will decrease further from model5.4 as each lag of X.t is added to the model.
+
+```{r}
+model5.4 = dynlm(Y.t ~ +temp+L(Y.t , k = 1 )+ L(Y.t , k = 2 ) + S.t + S.t.1 + 
+                   trend(Y.t) + season(Y.t))
+summary(model5.4)
+checkresiduals(model5.4)
+
+```
+
+
+We set X.t=temp. Using the for loop with dynamic number of variables, we plot how MASE values change as each lag of X.t is added to the model, starting with more recent to those further back in time (Meys, 2011). From the Fig 8, we observed an overall decreasing trend on MASE values as more lags of `temp` are added to the model, with an initial drop of MASE when lag 1 to 4 of `temp` was added to the model, followed by a less steep drop with more lags added. 
+
+Therefore, we add lag 1 to 4 of `temp` to model5.4 and name the new model model5.5.
+
+```{r}
+X.t=temp
+MASE.x = numeric(24)
+for (i in 1:24){
+  formula <- as.formula(paste("Y.t ~", paste("L(X.t, k=", 1:i, ")", collapse=" + "), 
+                              "+ L(Y.t , k = 1 ) + L(Y.t , k = 2 ) ","+S.t ","+ S.t.1"," + trend(Y.t)","+season(Y.t)+ X.t"))
+  model = dynlm(formula)
+  predicted_value = fitted(model)
+  MASE.x[i] = mase(mortality, predicted_value, step_size = 1)
+}
+
+MASE.x.dynlm <- data.frame(lags = 1:24, MASE = MASE.x)
+
+# Plot MASE values against lags
+ggplot(MASE.x.dynlm, aes(x=lags, y=MASE)) +
+  geom_line() +
+  geom_point() +
+  labs(title="Fig. 8 MASE values for increasing lags of X.t based on model5.4",
+       x="Lags",
+       y="MASE") 
+MASE.x
+```
+
+Model 5.5 was fitted with temp (X.t) and the 1st to 4th lag of temp, the 1st and 2nd lag of Y.t, S.t, S.t.1, trend, seasonality. As confirmed in Fig. 7. and Fig. 8, Model 5.5 has improved from all previous models using dynamic linear regression methods with a R-squared value of 0.783 and MASE value of 0.642. Residuals of model5.5 seem to follow normal distribution. Although BG test has p>0.05, significant lags in ACF plot for residuals suggests there is some serial correlation that model5.5 did not capture. Further investigations could be done to determine whether there is enough evidence of serial correlation. Model 5.5 seems to be able to capture seasonality well.
+
+```{r}
+model5.5 = dynlm(Y.t ~ +X.t+ L(X.t , k = 1 ) + L(X.t , k = 2 )+ L(X.t , k = 3 ) + 
+                   L(X.t , k = 4 ) + L(Y.t , k = 1 )+ L(Y.t , k = 2 ) + S.t + S.t.1 
+                 + trend(Y.t) + season(Y.t))
+summary(model5.5)
+checkresiduals(model5.5)
+
+predicted_value = fitted(model5.5)
+MASE.5.5 = mase(mortality, predicted_value, step_size = 1)
+MASE.5.5
+```
+
+Overall, Model 5.5 is the best model with dynamic linear regression methods with a R-squared value of 0.783 and MASE value of 0.642.
+
+## Exponential smoothing models
+
+To fit different trend and seasonality patterns, we move on to fitting the data with exponential smoothing methods.
+
+### Simple exponential smoothing
+This method takes the forecast from the previous period and adjusts it using the forecast error. `h` specifies the number of time period that we wish to forecast, so we set h to 4.
+
+Fit1.ses is fitted with MASE = 0.687. However, as our data contain seasonality, we will not proceed with this model.
+
+```{r}
+fit1.ses <- ses(mortality, initial="simple", h=4)
+summary(fit1.ses)
+
+```
+
+
+### Holt's linear method
+
+This method is able to include trend in the forecast model on top of simple exponential smoothing. We fit model fit2.holt with this method and the MASE is 0.726.
+
+```{r}
+fit2.holt <- holt(mortality, initial="simple", h=4)
+summary(fit2.holt)
+
+```
+
+Using the for loop created in Assignment 2 we could modify the Holt’s linear method with exponential trend. As R returns error optimization failure when fitting the Holt’s linear model with exponential trend without specifying values for alpha and beta, we create a for loop to find the best alpha and beta to use when fitting with Holt's linear method below. To save computational power we set the initial value for alpha and beta as 0.1 by sequences of 0.1. The for loops found best value 0.5 for alpha, and 0.1 for beta. Fit3.holt is fitted using Holt’s linear method with exponential trend with best alpha and beta values and it has MASE 0.729.
+
+```{r}
+#find best alpha and beta
+best.mase <- Inf
+best.alpha <- NA
+best.beta <- NA
+# Due to limited computational power of my device we are unable to compute sequences by 
+#smaller than 0.1
+for (alpha in seq(0.1, 1, by=0.1)) {
+  for (beta in seq(0.1, 1, by=0.1)) {
+    fit <- holt(mortality, alpha=alpha, beta=beta, exponential=TRUE, h=4, initial="simple")
+    fcast <- fitted(fit)
+    current.mase <- mase(mortality, fcast, step_size=1)
+    if (current.mase < best.mase) {
+      best.mase <- current.mase
+      best.alpha <- alpha
+      best.beta <- beta
+    }
+  }
+}
+best.alpha
+best.beta
+
+
+
+
+
+fit3.holt <- holt(mortality, alpha = 0.5, beta=0.1, initial="simple", exponential=TRUE, h=4) 
+summary(fit3.holt)
+
+```
+
+Fit4.holt modified the Holt’s linear method with damped trend, with MASE = 0.687.
+
+```{r}
+fit4.holt <- holt(mortality, initial="simple",damped=TRUE, h=4) 
+summary(fit4.holt)
+
+```
+
+### Holt-Winters’ Trend and Seasonality Method
+
+This method accounts for both trend and seasonality in the data. We first aggregate data from weekly to monthly, as R reports that the frequency is too high for hw(). Fit5.hw is fitted with additive seasonality (MASE=0.798), and fit6.hw is fitted with additive damped seasonality (MASE=0.742), the damped option has a slightly better fit given MASE.
+
+```{r}
+
+monthly.mortality = aggregate(zoo(mortality),as.yearmon,sum)
+monthly.mortality = ts(monthly.mortality,start = c(2010,1),frequency = 12)
+monthly.mortality
+
+
+fit5.hw <- hw(monthly.mortality, seasonal="additive", h=4*frequency(monthly.mortality))
+summary(fit5.hw)
+
+fit6.hw <- hw(monthly.mortality,seasonal="additive",damped = TRUE, 
+              h=4*frequency(monthly.mortality)) 
+summary(fit6.hw)
+
+
+```
+
+Fit7.hw, fit8.hw and fit.hw.mult.dmp all have multiplicative seasonality. Fit7.hw uses additive trend and has MASE=0.825, fit8.hw has MASE >1 so we don't consider it as it's worse than the Naive method and fit.hw.mult.dmp uses additive damped trend with the lowest MASE so far (MASE=0.774). Residual plots for these 3 models look similar as all 3 models failed to capture spikes in the data.
+
+```{r}
+fit7.hw <- hw(monthly.mortality,seasonal="multiplicative", h=4*frequency(monthly.mortality))
+summary(fit7.hw)
+
+
+
+fit8.hw <- hw(monthly.mortality,seasonal="multiplicative",exponential = TRUE, 
+              h=4*frequency(monthly.mortality))
+summary(fit8.hw)
+
+fit.hw.mult.dmp = hw(monthly.mortality, seasonal = "multiplicative",damped = TRUE, h = 4*frequency(monthly.mortality))
+summary(fit.hw.mult.dmp) 
+
+
+```
+
+*Shortlisting and diagnostic check*
+
+Out of models fitted with exponential smoothing methods, in terms of MASE, fit4.holt is the best using Holt's linear method and fit6.hw is the best using Holt-Winter's trend and seasonality method. We now compare them to fine the best model fitted with exponential smoothing methods and check its residuals.
+
+The model comparison table shows that although fit4.holt has a lower MASE, it's AIC and BIC values are way higher than those of fit6.hw, suggesting a poorer fit of fit4.holt. So we conclude that fit6.hw is the best model with exponential smoothing methods.
+```{r}
+# Extract AIC and BIC from models
+
+aicbic.holt <- c(AIC(fit4.holt$model), BIC(fit4.holt$model))
+aicbic.hw <-c(AIC(fit6.hw$model), BIC(fit6.hw$model))
+
+# list MASE from models
+
+mase.holt <- 0.687
+mase.hw <- 0.742
+
+# Combine into a table
+Model_comparison <- data.frame(
+  Model = c("fit4.holt", "fit6.hw"),
+  AIC = c(aicbic.holt[1], aicbic.hw[1]),
+  BIC = c(aicbic.holt[2], aicbic.hw[2]),
+  MASE = c(mase.holt,mase.hw)
+)
+Model_comparison
+
+```
+
+Residuals of fit6.hw shows no obvious seasonality or trend. The model was not able to capture the last obvervation however it is expected as we aggregated weekly data into monthly data for `mortality`, and there wasn't enough obvervation to fill the last month of monthly data. Residuals do not seem to be normally distributed.
+
+
+```{r}
+checkresiduals(fit6.hw)
+```
+Overall, fit6.hw with damped holt-winter's additive method is selected as the best model using exponential smoothing methods and the original `mortality`.
+
+*Point forecast and confidence interval*
+
+We set h=1 to represent 1 month i.e. 4 weeks' mortality.
+
+```{r}
+frc.fit6.hw = forecast(fit6.hw, h=1)
+upper.95.int = frc.fit6.hw$upper[,2] #extract the upper bound
+upper.95.int
+lower.95.int = frc.fit6.hw$lower[,2]#extract the lower bound 
+lower.95.int
+pointforecast = frc.fit6.hw$mean
+pointforecast
+```
+
+## State-space models
+
+Lastly, the state-space model approach is used to fit `mortality`. This approach includes additive and multiplicative error terms into the exponential smoothing models using the ets() function, which stands for error, trend and seasonality and we use `A` or `M` to specify whether it is additive or multiplicative. When damped option equals `True` we add `d` to the model name.
+
+The auto fit function is specified as model = 'ZZZ'. This allows R to find the best fitted ets model automatically, however, it does not guarentee the best result. After the ZZZ model, we fit all other allowed combinations from additive error terms to multiplicative error terms to see if they give a better fit in terms of MASE.
+
+We use the monthly.mortality converted in the previous section as ETS cannot handle data with frequency greater than 24.
+
+The model fit.ZZZ finds ETS(M,N,M) to be the best fitting model with MASE 0.7, AIC=1413.9, BIC=1455.5.
+
+```{r}
+fit.ZZZ = ets(monthly.mortality,model = "ZZZ")
+summary(fit.ZZZ)
+```
+
+### Additive error terms
+
+We fit the 5 linear ETS models (A,N,N), (A,A,N), (A,Ad,N), (A,N,A), (A,Ad,A),and (A,A,A). None of the 5 models has better MASE than fit.ZZZ. Note that the ets function fitted ETS(A,A,A) as ETS(A,Ad,A), meaning that the function found ETS(A,Ad,A) fits `monthly.mortality` better than the auto-fitted model ETS(M,N,M).
+
+
+```{r}
+#Additive error terms
+fit.ANN = ets(monthly.mortality, model = "ANN")
+summary(fit.ANN) # 
+
+
+
+fit.AAN = ets(monthly.mortality, model = "AAN")
+summary(fit.AAN)# 
+
+
+
+fit.AAdN = ets(monthly.mortality, model = "AAN", damped = TRUE)
+summary(fit.AAdN)
+
+
+fit.ANA = ets(monthly.mortality, model = "ANA")
+summary(fit.ANA)#
+
+
+
+fit.AAA = ets(monthly.mortality, model = "AAA")
+summary(fit.AAA)#
+
+fit.AAdA = ets(monthly.mortality, model = "AAA", damped = TRUE)
+summary(fit.AAdA)# 
+```
+
+
+### Multiplicative error terms
+
+Then we fit models with multiplicative error terms. Among all 13 model fitted, fit.MNM has been fitted with the auto-fit function so we skip it. From summary() we can see that almost none of the models has better AIC/BIC/MASE values than the (M,N,M) model. Although model (M,N,A) has MASE of 0.697, which slightly smaller than the MASE of the (M,N,M) model, its AIC/BIC values are larger than those of (M,N,M) model's.
+
+```{r}
+# multiplicative error terms
+fit.MNN = ets(monthly.mortality, model = "MNN")
+summary(fit.MNN) #
+
+
+
+fit.MAN = ets(monthly.mortality, model = "MAN")
+summary(fit.MAN)# 
+
+
+
+fit.MAdN = ets(monthly.mortality, model = "MAN", damped = TRUE)
+summary(fit.MAdN)#
+
+
+fit.MNA = ets(monthly.mortality, model = "MNA")
+summary(fit.MNA)# 
+
+
+fit.MAdA = ets(monthly.mortality, model = "MAA", damped = TRUE)
+summary(fit.MAdA)# 
+
+
+fit.MAA = ets(monthly.mortality, model = "MAA")
+summary(fit.MAA)# 
+
+
+# multiplicative error terms with multiplicative trend and/or seasonality
+fit.MMN = ets(monthly.mortality, model = "MMN")
+summary(fit.MMN) # 
+
+
+ 
+
+fit.MAM = ets(monthly.mortality, model = "MAM")
+summary(fit.MAM) #
+
+
+
+fit.MMM = ets(monthly.mortality, model = "MMM")
+summary(fit.MMM) 
+
+
+
+fit.MMdN = ets(monthly.mortality, model = "MMN", damped = TRUE)
+summary(fit.MMdN)
+
+
+
+
+fit.MAdM = ets(monthly.mortality, model = "MAM", damped = TRUE)
+summary(fit.MAdM)
+
+
+fit.MMdM = ets(monthly.mortality, model = "MMM", damped = TRUE)
+summary(fit.MMdM)#
+
+```
+
+*Diagnostic check*
+
+ACF plot of residuals and Ljung-Box test result (p>0.05) suggest that the model ets(M,N,M) captures serial correlation in the data. Residuals do not seem to be normally distributed and the odd value in Oct,2019 was not captured by the model, as it seems to be due to the aggregation from weekly to monthly `mortality`.
+
+```{r}
+checkresiduals(fit.ZZZ)
+```
+
+As residuals from fitting the original data shows no seasonal pattern we will not fit ets models using seasonal differenced series. Overall, the best fitted model in terms of AIC, BIC, and MASE using ets models is fit.ZZZ, which is ETS(M,N,M) using aggregated series `monthly.mortality`.
+
+*point forecast and 95% CI*
+
+```{r}
+frc.fit.ZZZ = forecast.ets(fit.ZZZ, h=1)
+upper.95.int = frc.fit.ZZZ$upper[,2] #extract the upper bound
+upper.95.int
+lower.95.int = frc.fit.ZZZ$lower[,2]#extract the lower bound 
+lower.95.int
+pointforecast = frc.fit.ZZZ$mean
+pointforecast
+```
+
+# Model Selection 
+
+From the model fitting section, we compare the best model fitted with each method to decide which model is to be used for forecasting weekly mortality 4 weeks ahead. We combine their AIC, BIC and MASE values into a table, by extracting AIC, BIC values from models, and assigned MASE values from each model. We then combine all values into a data frame to compare the best models from each method:
+
+- state-space model: fit.ZZZ with ETS(M,N,M)
+- exponential smoothing model: fit6.hw 
+- time series regression model: model4.chem12 fitted with `chem1` and `chem2`
+- dynamic linear regression model: model5.5 with lag 1 to 4 of `temp`, lag 1 and 2 of Y.t, seasonality and trend
+
+
+```{r}
+# Extract AIC and BIC from models
+aicbic.ZZZ <- c(AIC(fit.ZZZ), BIC(fit.ZZZ))
+aicbic.hw <- c(AIC(fit6.hw$model), BIC(fit6.hw$model))
+aicbic.4.chem12 <-c(AIC(model4.chem12$model), BIC(model4.chem12$model))
+aicbic.5.5 <-c(AIC(model5.5), BIC(model5.5))
+# list MASE from models
+mase.ZZZ <- 0.7
+mase.hw <- 0.742
+mase.4.chem12 <- round(unlist(MASE(model4.chem12)), 3) 
+mase.5.5 <- round(MASE.5.5,3)
+
+# Combine into a table
+Model_comparison <- data.frame(
+  Model = c("fit.ZZZ", "fit6.hw", "model4.chem12", "model5.5"),
+  AIC = c(aicbic.ZZZ[1], aicbic.hw[1], aicbic.4.chem12[1], aicbic.5.5[1]),
+  BIC = c(aicbic.ZZZ[2], aicbic.hw[2], aicbic.4.chem12[2], aicbic.5.5[2]),
+  MASE = c(mase.ZZZ, mase.hw, mase.4.chem12, mase.5.5)
+)
+
+```
+
+From the table, we could see that although fit.ZZZ.diff with ETS(M,N,M) is the best fitted in terms of AIC and BIC, and is the second most accurate model base on MASE among the 4 models. Although model 5.5 has the lowest MASE,however, it has the highest AIC/BIC value, suggesting poorer fit. 
+Overall, we proceed to forecasting with the ETS(M,N,M) model as it gives the lowest AIC and BIC and the second lowest MASE.
+
+```{r}
+Model_comparison
+```
+
+# Forecasting 
+
+Finally, we forecast 4 weeks ahead of `mortality` by specifying h=1 (months) as ets model was fitted with monthly.mortality, and extract the upper and lower bound from the forecast and compute their distance from the forecast mean. The upper bound of value is 333.4 and the lower bound is 233.1. The mortality value 4 weeks ahead (in the format of 1 month ahead) is 283.2. Fig.9 shows the forecast in blue with grey confidence intervals.
+
+```{r}
+
+frc.fit.ZZZ = forecast.ets(fit.ZZZ, h=1)
+
+upper.95.int = frc.fit.ZZZ$upper[,2] #extract the upper bound
+upper.95.int
+lower.95.int = frc.fit.ZZZ$lower[,2]#extract the lower bound 
+lower.95.int
+centre = frc.fit.ZZZ$mean
+centre
+length.int = abs(centre - upper.95.int)
+plot(frc.fit.ZZZ,  main = "Fig. 9: Original series, forecasts and 95% forecast 
+     interval for the mortality series", ylab = "Mortality")
+
+
+```
+
+
+## (Task 1) Conclusion
+
+In summary, task 1 found ets(M,N,M) model to be the best model to forecast 4 weeks ahead of the mortality series.  To avoid overfitting, we could use train-test split or other cross-validation methods to address this issue in the future. 
+
+# Task 2
+
+Task 2 involves analyzing the relationship between 81 species of plants' first flowering day (FFD) and climate factors such as rainfall (rain), temperature (temp), radiation level (rad), and relative humidity (RH) from 1984 to 2014.
+
+Part a of Task 2 aims to:
+
+- model using univariate climate predictors with DLM, ARDL, polyck, koyck, dynamic, exponential smoothing and state-space model
+- find optimal models within each method, using values of R squared, AIC, BIC, MASE as is appropriate
+- provide point forecasts and confidence intervals FFD 4 years ahead using the most suitable model
+
+## Data description 
+### Import and inspect data
+
+First, we import `FFD data` and save as a data frame. After dropping the Year variable, the FFD dataset contains 31 observations for 5 variables:
+
+- `FFD` contains the day of occurrence of a species first flowering 
+- `Temperature` contains yearly averaged temperature
+- `Rainfall` contains yearly averaged rainfall
+- `Radiation` contains yearly averaged radiation
+- `RelHumidity` contains yearly averaged relative humidity
+
+All variables are numeric and above 0. There is no missing value from this dataset.
+
+```{r}
+FFD <- read.csv("FFD  .csv")
+class(FFD)
+tail(FFD)
+FFD = FFD[-1]
+summary(FFD)
+#check for null and NA 
+anyNA(FFD)
+is.null(FFD)
+```
+
+We also import coraviate x-values for task 2 to forecast 4 years ahead ffd with, and assign them by variable names plus x.
+
+```{r}
+task2x <- read.csv("Covariate x-values for Task 2  .csv")
+class(task2x)
+tail(task2x)
+task2x <- na.omit(task2x)
+
+tempx = task2x$Temperature
+rainx = task2x$Rainfall
+radx = task2x$Radiation
+RHx=task2x$RelHumidity
+```
+
+
+
+### Convert variables to ts objects and check correlation
+
+Next, we convert variables into time series objects using ts() and set `start` to 1984 and `frequency` to 1 for yearly data. Time series objects for the 5 variables are renamed after conversion for simplicity based on task description:
+
+- rename `FFD` to `ffd` to avoid overlapping with dataset name
+- rename `Temperature` to `temp` 
+- shortened `Rainfall` to `rain`
+- shortened `Radiation` to `rad`
+- shortened `RelHumidity` to `RH`
+
+```{r}
+FFD.ts = ts(FFD, start=1984,frequency = 1)
+ffd = ts(FFD$FFD, start=1984,frequency = 1)
+temp = ts(FFD$Temperature, start=1984,frequency = 1)
+rain = ts(FFD$Rainfall, start=1984,frequency = 1)
+rad =ts(FFD$Radiation, start=1984,frequency = 1)
+RH = ts(FFD$RelHumidity, start=1984,frequency = 1)
+
+```
+
+We perform scaling to plot all variables side by side to see correlation.
+
+From Fig.0 and the correlation matrix, we can see that rainfall and radiation have very weak positive correlation 
+with ffd, temperature and RelHumidity have weak negative correlation with ffd.
+
+```{r}
+#
+
+FFD.scale = scale(FFD.ts)
+plot(FFD.scale, plot.type="s", col=c("blue","gold","red", "purple","black"), 
+     main = "Fig. 0 FFD series")
+legend("topleft", lty=1,cex=0.5,text.width=0.85
+       ,col=c("blue",  "gold","red","purple","black"),
+       c("temp", "rain", "rad", "RH", "ffd"))
+
+cor(FFD.ts)#correlation
+```
+
+## Data exploration
+
+In this section, we explore climate variables `temp`, `rain`, `rad`, `RH` and `ffd`. As data is yearly, we do not perform decomposition.
+
+For variable `temp` in Fig 1.1, 1.2, 1.3:
+
+- no obvious evidence of overall trend with fluctuations
+- no obvious evidence of seasonality
+- no obvious evidence of autocorrelation
+- no obvious evidence of intervention
+- no obvious evidence of changing variance
+
+Both ADF and PP test have H0=non-stationary.
+
+ADF test has p-value >0.05, suggesting we fail to reject H0 that data is non-stationary, however PP test returned p-value < 0.05, for us to reject H0 and conclude that the series is stational. Based on observation of Fig 1.2 and Fig. 1.3, there is no significant lag therefore no trend in `temp`.
+
+```{r}
+ts_analysis(data = temp, 
+            title = "Fig 1.1 Time series plot of yearly averaged temperature in 
+   ",
+            ylab = "Yearly averaged temperature", 
+            acf_title = "Fig 1.2 ACF for yearly averaged temperature", 
+            pacf = "Fig 1.3 PACF for yearly averaged temperature")
+
+stationarity_test(temp)
+```
+
+For variable `rain` in Fig 2.1, 2.2, 2.3:
+
+- no obvious evidence of overall trend with fluctuations
+- no obvious evidence of seasonality
+- no obvious evidence of autocorrelation
+- no obvious evidence of intervention however there is a significant drop around 1996
+- no obvious evidence of changing variance
+
+ADF test has p-value >0.05, suggesting we fail to reject H0 that data is non-stationary, while PP test returned p-value < 0.05, so we reject H0 and conclude that the series is stational. Based on observation of Fig 2.2 and Fig. 2.3, there is no significant lag therefore no trend in `rain`.
+
+```{r}
+ts_analysis(data = rain, 
+            title = "Fig 2.1 Time series plot of yearly averaged rainfall",
+            ylab = "Yearly averaged rainfall", 
+            acf_title = "Fig 2.2 ACF for yearly averaged rainfall", 
+            pacf = "Fig 2.3 PACF for yearly averaged rainfall")
+
+stationarity_test(rain)
+```
+
+For variable `rad` in Fig 3.1, 3.2, 3.3:
+
+- no obvious evidence of overall trend with fluctuations
+- no obvious evidence of seasonality
+- evidence of autocorrelation around and before 1991 with succeeding time points in Fig 3.1
+- there is a drop around 1992 which might be intervention
+- no obvious evidence of changing variance
+
+ADF test and PP test both returned p-value greater than 0.05, therefore, we fail to reject the null hypothesis that the series is non-stational. Significant lags in Fig 3.2 and 3.3 supports the conclusion that `rad` is non-stational.
+
+```{r}
+ts_analysis(data = rad, 
+            title = "Fig 3.1 Time series plot of yearly averaged radiation in 
+            Victoria.",
+            ylab = "Yearly averaged radiation", 
+            acf_title = "Fig 3.2 ACF for yearly averaged radiation", 
+            pacf = "Fig 3.3 PACF for yearly averaged radiation")
+
+stationarity_test(rad)
+```
+
+For variable `HD` in Fig 4.1, 4.2, 4.3:
+
+- no obvious evidence of overall trend with fluctuations
+- no obvious evidence of seasonality
+- evidence of autocorrelation in Fig.4.2 with a significant lag 11
+- no obvious evidence of intervention
+- changing variance every 3-6 years
+
+ADF test has p-value >0.05, suggesting we fail to reject H0 that data is non-stationary, while PP test returned p-value < 0.05, so we reject H0 and conclude that the series is stational. Based on observation of Fig 4.2 and Fig. 4.3, there is no significant lag before lag 10, but one at lag 11. We introduce a different stationarity test kpss test due to the disagreement. With p>0.05 from the kpss test, we fail to reject the null hypothesis that the `RH` series is stational.
+
+
+```{r}
+ts_analysis(data = RH, 
+            title = "Fig 4.1 Time series plot of yearly averaged relative 
+            humidity",
+            ylab = "Yearly averaged relative humidity", 
+            acf_title = "Fig 4.2 ACF for yearly averaged relative humidity", 
+            pacf = "Fig 4.3 PACF for yearly averaged relative humidity")
+
+stationarity_test(RH)
+kpss.test(RH)
+```
+
+For variable `ffd`:
+
+- overall trend unclear with flucturations 
+- no obvious evidence of seasonality
+- no obvious evidence autocorrelation apart from significant lag 6 in both Fig 5.2 and Fig. 5.3
+- no obvious evidence of intervention
+- no obvious evidence of changing variance
+
+ADF test returns p-value greater than 0.05, therefore, we fail to reject the null hypothesis that the series is non-stational. However, PP test result disagrees with p <0.05, suggesting that we reject H0 and conclude the series is stational, possibly due to the small sample size. Due to the disagreement between ADF and PP test, we introduce a different stationarity test kpss test. With p>0.05 from the kpss test, we fail to reject the null hypothesis and conclude that the series is stational. In both Fig 5.2 and Fig. 5.3 there are significant lags at 6, so we will attempt differencing `ffd` to improve sationarity.  
+
+
+```{r}
+ts_analysis(data = ffd, 
+            title = "Fig 5.1 Time series plot of yearly FFD",
+            ylab = "Yearly FFD", acf_title = "Fig 5.2 ACF for yearly FFD", 
+            pacf = "Fig 5.3 PACF for Yearly FFD")
+
+stationarity_test(ffd)
+kpss.test(ffd)
+```
+
+## Apply differencing
+
+Since `rad` and `ffd` is non-stationary, we apply differencing to remove trend and achieve stationarity.
+
+We check time series plot, ACF and PACF plot after each differencing was performed for each variable:
+
+- For `rad`, although it still has significant lags in Fig 6.8 and Fig 6.9, p<0.05 from ADF and PP unit root test and p>0.05 from kpss test suggests that stationarity has been achieved after 3rd differencing.
+
+- For `ffd`, stationarity has been achieved after first differencing as shown in ADF test, PP test result (p<0.05), kpss test result (p>0.05) and inspection of Fig 7.1. We performed 2nd and 3rd differencing so the length of variables `ffd.diff3` matches when modeling with univarite predictor `rad.diff3`. 
+
+
+```{r}
+
+rad.diff = diff(rad)
+ts_analysis(data = rad.diff, 
+            title = "Fig 6.1 Time series plot of yearly radiation after 
+            first differencing.",
+            ylab = "Yearly radiation", acf_title = "Fig 6.2 ACF for yearly radiation after
+             first differencing", 
+            pacf = "Fig 6.3 PACF for Yearly radiation after first differencing")
+
+stationarity_test(rad.diff)
+kpss.test(rad.diff)
+
+rad.diff2 = diff(rad.diff)
+ts_analysis(data = rad.diff2, 
+            title = "Fig 6.4 Time series plot of yearly radiation after 
+            2nd differencing.",
+            ylab = "Yearly radiation", acf_title = "Fig 6.5 ACF for yearly radiation after 
+            2nd differencing", 
+            pacf = "Fig 6.6 PACF for Yearly radiation after 2nd differencing")
+
+stationarity_test(rad.diff2)
+kpss.test(rad.diff2)
+
+rad.diff3 = diff(rad.diff2)
+ts_analysis(data = rad.diff3, 
+            title = "Fig 6.7 Time series plot of yearly radiation after 
+3rd differencing.",
+            ylab = "Yearly radiation", acf_title = "Fig 6.8 ACF for yearly radiation after 
+3rd differencing", 
+            pacf = "Fig 6.9 PACF for Yearly radiation after 3rd differencing")
+
+stationarity_test(rad.diff3)
+kpss.test(rad.diff3)
+
+ffd.diff = diff(ffd)
+ts_analysis(data = ffd.diff, 
+            title = "Fig 7.1 Time series plot of yearly ffd after 
+            first differencing.",
+            ylab = "Yearly ffd", acf_title = "Fig 7.2 ACF for yearly ffd after
+             first differencing", 
+            pacf = "Fig 7.3 PACF for Yearly ffd after first differencing")
+
+stationarity_test(ffd.diff)
+kpss.test(ffd.diff)
+
+ffd.diff2 = diff(ffd.diff)
+ts_analysis(data = ffd.diff2, 
+            title = "Fig 7.4 Time series plot of yearly ffd after 
+            2nd differencing.",
+            ylab = "Yearly ffd", acf_title = "Fig 7.5 ACF for yearly ffd after 
+            2nd differencing", 
+            pacf = "Fig 7.6 PACF for Yearly ffd after 2nd differencing")
+
+stationarity_test(ffd.diff2)
+kpss.test(ffd.diff2)
+
+ffd.diff3 = diff(ffd.diff2)
+ts_analysis(data = ffd.diff3, 
+            title = "Fig 7.7 Time series plot of yearly ffd after 
+            3rd differencing.",
+            ylab = "Yearly ffd", acf_title = "Fig 7.8 ACF for yearly ffd after 
+            3rd differencing", 
+            pacf = "Fig 7.9 PACF for Yearly ffd after 3rd differencing")
+
+stationarity_test(ffd.diff3)
+kpss.test(ffd.diff3)
+```
+
+Variable `temp`, `rain` and `RH` are stationary however we have performed 1st differencing so their length matches `ffd.diff` during modeling. `temp`, `rain` both pass stationary check after 1st differencing. `RH.diff` has ADF test result with p>0.05, however, based on Fig. 11.2 and Fig. 11.3 there is not trend in `RH.diff`.
+
+```{r}
+ffd.diff = diff(temp)
+ts_analysis(data = temp.diff, 
+            title = "Fig 9.1 Time series plot of yearly temperature after 
+            first differencing.",
+            ylab = "Yearly temp", acf_title = "Fig 9.2 ACF for yearly temperature after
+             first differencing", 
+            pacf = "Fig 9.3 PACF for Yearly temperature after first differencing")
+
+stationarity_test(temp.diff)
+
+rain.diff = diff(rain)
+ts_analysis(data = rain.diff, 
+            title = "Fig 10.1 Time series plot of yearly rainfall after 
+            first differencing.",
+            ylab = "Yearly rainfall", acf_title = "Fig 10.2 ACF for yearly rainfall after
+             first differencing", 
+            pacf = "Fig 10.3 PACF for Yearly rainfall after first differencing")
+
+stationarity_test(rain.diff)
+
+RH.diff = diff(RH)
+ts_analysis(data = RH.diff, 
+            title = "Fig 11.1 Time series plot of yearly relative humidity after 
+            first differencing.",
+            ylab = "Yearly relative humidity", acf_title = "Fig 11.2 ACF for yearly 
+            relative humidity after first differencing", 
+            pacf = "Fig 11.3 PACF for Yearly relative humidity after first differencing")
+
+stationarity_test(RH.diff)
+```
+
+## Time series regression models
+
+To find the most suitable model for forecasting 4 years ahead of FFD, we attempt to fit models using the time series regression method. 
+
+### Finite distributed lag model
+
+First we use for loops to get the optimal q value based on their AIC and BIC scores and MASE values. We attempt single explanatory variables each time with the dependent variable `ffd`, and found that the lowest AIC, BIC scores and MASE value occur at q= 5 overall. 
+
+```{r}
+for(i in 1:5){
+  model1=dlm(x=as.vector(temp.diff), y=as.vector(ffd.diff),q=i)
+  cat("q=",i,"AIC=",AIC(model1$model), "BIC=",BIC(model1$model), "MASE=", MASE(model1)$MASE,"\n")
+  
+}
+
+```
+
+```{r}
+for(i in 1:5){
+  model1=dlm(x=as.vector(rain.diff), y=as.vector(ffd.diff),q=i)
+  cat("q=",i,"AIC=",AIC(model1$model), "BIC=",BIC(model1$model), "MASE=", MASE(model1)$MASE,"\n")
+  
+}
+
+```
+
+```{r}
+for(i in 1:5){
+  model1=dlm(x=as.vector(rad.diff3), y=as.vector(ffd.diff3),q=i)
+  cat("q=",i,"AIC=",AIC(model1$model), "BIC=",BIC(model1$model), "MASE=", MASE(model1)$MASE,"\n")
+  
+}
+
+```
+
+```{r}
+for(i in 1:5){
+  model1=dlm(x=as.vector(RH.diff), y=as.vector(ffd.diff),q=i)
+  cat("q=",i,"AIC=",AIC(model1$model), "BIC=",BIC(model1$model), "MASE=", MASE(model1)$MASE,"\n")
+  
+}
+
+```
+
+*Model fitting* 
+  
+We now fit models with the optimal q=5 obtained from the for loop, using one predictor at a time.
+
+```{r}
+
+model1.temp=dlm(x=as.vector(temp.diff), y=as.vector(ffd.diff),q=5)
+
+model1.rain=dlm(x=as.vector(rain.diff), y=as.vector(ffd.diff),q=5)
+model1.rad=dlm(x=as.vector(rad.diff3), y=as.vector(ffd.diff3),q=5)
+model1.RH=dlm(x=as.vector(RH.diff), y=as.vector(ffd.diff),q=5)
+
+
+```
+
+*Shortlisitng*
+We now sort models by their AIC, BIC and MASE to find the best fitted model using this method. The function was user-defined previously. 
+
+Warning occurs as models are not all fitted to the same number of observations, `model1.rad` using data after 3rd differencing and others using data after 1st differencing. Model1.RH has the best fit out of all finite distributed lag models, with AIC=31, BIC=41, and the second lowest MASE=0.47 (MASE<1 so it has better fit than the average one-step naive forecast). We move on to checking summary and residuals of model1.RH.
+
+```{r}
+aic = AIC(model1.temp$model, model1.rain$model, model1.rad$model, model1.RH$model)
+bic = BIC(model1.temp$model, model1.rain$model, model1.rad$model, model1.RH$model)
+mase = MASE(model1.temp, model1.rain, model1.rad, model1.RH)
+
+shortlist(aic,score = "aic")
+shortlist(bic,score = "bic")
+shortlist(mase,score = "mase")
+```
+
+*Diagnostic check*
+  
+Model1.RH has AIC=31, BIC=41, MASE=0.48, R^2=0.186 at 5% significance level. The Breusch-Godfrey(bg) test checks whether there is serial correlation of any order up to the displayed order (H0=no serial correlation), as p>0.05, we fail to reject the null hypothesis and conclude that there is no serial correlation up to the displayed order, which is confirmed in residual plots where no significant lags exist. 
+
+No seasonality is left in residuals. Shapiro-wilk test shows that residuals are normally distributed. Variance inflation factors (VIFs) result shows minimal multicollinearity with VIF < 10.
+
+```{r}
+
+summary(model1.RH)
+diagnostic_check(model1.RH)
+
+```
+
+### Polynomial model
+
+For loops result shows although MASE values for q=5 is not the smallest, q=5 returns the lowest MASE and AIC, BIC values. So we fit models using each predictor using q=5 and specify k=2 as second order polynomial is used.
+
+```{r}
+
+for(i in 2:5){
+  model2=polyDlm(x=as.vector(temp.diff), y=as.vector(ffd.diff), q = i, k = 2, show.beta = FALSE)
+  cat("q=",i,"AIC=",AIC(model2$model), "BIC=",BIC(model2$model), "MASE=",MASE(model2)$MASE,"\n")
+}
+
+for(i in 2:5){
+  model2=polyDlm(x=as.vector(rain.diff), y=as.vector(ffd.diff), q = i, k = 2, show.beta = FALSE)
+  cat("q=",i,"AIC=",AIC(model2$model), "BIC=",BIC(model2$model), "MASE=",MASE(model2)$MASE,"\n")
+}
+
+for(i in 2:5){
+  model2=polyDlm(x=as.vector(rad.diff3), y=as.vector(ffd.diff3), q = i, k = 2, show.beta = FALSE)
+  cat("q=",i,"AIC=",AIC(model2$model), "BIC=",BIC(model2$model), "MASE=",MASE(model2)$MASE,"\n")
+}
+
+for(i in 2:5){
+  model2=polyDlm(x=as.vector(RH.diff), y=as.vector(ffd.diff), q = i, k = 2, show.beta = FALSE)
+  cat("q=",i,"AIC=",AIC(model2$model), "BIC=",BIC(model2$model), "MASE=",MASE(model2)$MASE,"\n")
+}
+
+```
+
+*Model fitting* 
+  
+```{r}
+
+model2.temp = polyDlm(x=as.vector(temp.diff), y=as.vector(ffd.diff), q = 5, k = 2, 
+                      show.beta = FALSE)
+model2.rain = polyDlm(x=as.vector(rain.diff), y=as.vector(ffd.diff), q = 5, k = 2, 
+                      show.beta = FALSE)
+model2.rad = polyDlm(x=as.vector(rad.diff3), y=as.vector(ffd.diff3), q = 5, k = 2, 
+                     show.beta = FALSE)
+model2.RH = polyDlm(x=as.vector(RH.diff), y=as.vector(ffd.diff), q = 5, k = 2, 
+                    show.beta = FALSE)
+
+```
+
+*Shortlisting*
+  
+Sorting of metrics shows that model2.rain ranks last in terms of MASE but returns the lowest AIC, BIC values, so it is the best fitted model using polydlm. 
+
+```{r}
+aic = AIC(model2.temp$model, model2.rain$model, model2.rad$model, model2.RH$model)
+bic = BIC(model2.temp$model, model2.rain$model, model2.rad$model, model2.RH$model)
+mase = MASE(model2.temp, model2.rain, model2.rad, model2.RH)
+
+shortlist(aic,score = "aic")
+shortlist(bic,score = "bic")
+shortlist(mase,score = "mase")
+```
+
+*Diagnostic check*
+  
+Model2.rain has very poor fit with R-squared = -0.02. Serial correlation were not captured by the model as shown in residuals and result of BG test (p<0.05). Coefficients z.t1 and z.t2 have VIF way above 10, suggesting very high effect of multicollinearity. No seasonality is left in residuals. Residuals are normal based on shapiro-wilk test result.
+
+```{r}
+summary(model2.rain)
+diagnostic_check(model2.rain)
+```
+
+### Koyck model
+
+The Koyck distributed lag model assumes more recent lagged values of independent variables have a greater impact on the dependent variable than those that are further back in time.
+
+Results from fitting Model3 suggest a worse fit than the naive method with MASE = 1.03. Model3 is significant and has R square value 0.76.  Residuals show clear seasonal pattern and serial correlation. VIF close to 1 suggests no multicollinearity.
+
+
+*Model fitting* 
+  
+We now fit models using one predictor at a time. Original series were fitted as Koyck model returns errors for differenced data
+
+```{r}
+
+model3.temp=koyckDlm(x=as.vector(temp), y=as.vector(ffd))
+model3.rain=koyckDlm(x=as.vector(rain), y=as.vector(ffd))
+model3.rad=koyckDlm(x=as.vector(rad), y=as.vector(ffd))
+model3.RH=koyckDlm(x=as.vector(RH), y=as.vector(ffd))
+
+```
+
+*Shortlisitng*
+
+Sorting function shows that model3.rad returns the lowest MASE values, so it is the best fitted model using koyck method. 
+
+```{r}
+
+mase = MASE(model3.temp, model3.rain, model3.rad, model3.RH)
+shortlist(mase,score = "mase")
+```
+
+
+
+*Diagnostic check*
+  
+Model3.rad has MASE=0.71, and R-squared = -0.15, which may due to small sample size. Serial correlation is still shown in residuals ACF plot however result of BG test (p>0.05) disagrees. VIF values close to 1 indicate very minimal effect of multicollinearity. No seasonality is left in residuals. Shapiro-wilk test result (p>0.05) and histogram suggest that residuals are normally distributed.
+
+```{r}
+summary(model3.rad, diagnostics = TRUE)
+diagnostic_check(model3.rad)
+```
+
+### Autoregressive dlm
+
+The autoregressive distributed lag model recognizes that dependent variable Y could be influence by its own past values and past values of independent variable. For the same reason as above we use original series to fit models. Overall, the for loop found p=5 and q=1 returns the best AIC and BIC and a relatively small MASE value for each predictor vs `ffd`.
+
+```{r} 
+for(i in 1:5){
+  for(j in 1:5){
+    model4 = ardlDlm(x=as.vector(temp), y=as.vector(ffd), p = i, q = j)
+    cat("p = ", i, "q = ", j, "AIC = ", AIC(model4$model), "BIC = ", BIC(model4$model), 
+        "MASE=", MASE(model4)$MASE, "\n")
+  }
+}
+
+```
+
+```{r} 
+for(i in 1:5){
+  for(j in 1:5){
+    model4 = ardlDlm(x=as.vector(rain), y=as.vector(ffd), p = i, q = j)
+    cat("p = ", i, "q = ", j, "AIC = ", AIC(model4$model), "BIC = ", BIC(model4$model),
+        "MASE=", MASE(model4)$MASE, "\n")
+  }
+}
+
+```
+
+```{r} 
+for(i in 1:5){
+  for(j in 1:5){
+    model4 = ardlDlm(x=as.vector(rad), y=as.vector(ffd), p = i, q = j)
+    cat("p = ", i, "q = ", j, "AIC = ", AIC(model4$model), "BIC = ", BIC(model4$model), 
+        "MASE=", MASE(model4)$MASE, "\n")
+  }
+}
+
+```
+
+```{r} 
+for(i in 1:5){
+  for(j in 1:5){
+    model4 = ardlDlm(x=as.vector(RH), y=as.vector(ffd), p = i, q = j)
+    cat("p = ", i, "q = ", j, "AIC = ", AIC(model4$model), "BIC = ", BIC(model4$model), 
+        "MASE=", MASE(model4)$MASE, "\n")
+  }
+}
+
+```
+
+*Model fitting*
+  
+Now we fit each predictor using p=5 and q=1 found from the for loop.
+
+```{r}
+
+model4.temp = ardlDlm(x = as.vector(temp), y = as.vector(ffd),p = 5, q = 1)
+model4.rain = ardlDlm(x = as.vector(rain), y = as.vector(ffd),p = 5, q = 1)
+model4.rad = ardlDlm(x = as.vector(rad), y = as.vector(ffd),p = 5, q = 1)
+model4.RH = ardlDlm(x = as.vector(RH), y = as.vector(ffd),p = 5, q = 1)
+```
+
+*Shortlisting*
+  
+We calculate AIC, BIC, and MASE for the fitted models using ardlDlm() and sort scores to shortlist the best model fitted based on these metrics. Model4.rain was shortlisted with the lowest AIC, BIC and MASE.
+
+```{r}
+aic = AIC(model4.temp$model, model4.rain$model, model4.rad$model, model4.RH$model)
+bic = BIC(model4.temp$model, model4.rain$model, model4.rad$model, model4.RH$model)
+mase = MASE(model4.temp, model4.rain, model4.rad, model4.RH)
+
+
+shortlist(aic,score = "aic")
+shortlist(bic,score = "bic")
+shortlist(mase,score = "mase")
+```
+
+*Diagnostic check*
+  
+Model4.rain was fitted with p=5 and q=1 and has AIC=248, BIC=259, MASE = 0.759 and R-squared=0.004. 
+
+From residuals, The ACF plot of residuals has most values within the line with no seasonal patterns. P-value of Breusch-Godfrey test is 0.27, so we fail to reject H0 and conclude that there is no serial correlation of order up to 1. From this we can conclude that the model has captured underlying patterns in the data.Shapiro-wilk test result suggests that residuals follow normal distribution with p-value >0.05. Test values for VIF suggests very low multicollinearity. 
+
+```{r}
+summary(model4.rain)
+diagnostic_check(model4.rain)
+```
+
+Overall, Model1.RH is the best time series regression model to be included in the Model Selection section. Model1.RH is fitted with the` RH.diff` and `ffd.diff`.
+
+
+## Dynamic linear regression models (dynlm)
+
+The dynamic linear regression methods address multicollinearity better in the data. We now fit the series using dynamic linear regression models with Y.t = ffd. To calculate MASE values, we use the mase() function from the `Metrics` package for all dynlm models. Original data can be used as the model can deal with trend. For yearly data we don't fit season(Y.t) as frequency is 1.
+
+Model5 was fitted with each variable, the first lag of Y.t, trend, with or without intercept (models without intercept are specified by adding 1 to model name, e.g.model5.temp1 is model5.temp without intercept). Models fitted with intercept all have negative adjusted R-squared values whereas models fitted without intercept all have very high adjusted R-squared values. Among all models, model5.RH1 has the highest R-squared value of 0.9868.
+
+```{r}
+
+Y.t = ffd
+
+
+model5.temp = dynlm(Y.t ~ +temp +L(Y.t , k = 1 ) +  trend(Y.t) )
+model5.temp1 <- dynlm(Y.t ~ -1 + temp + L(Y.t, k = 1) + trend(Y.t))
+summary(model5.temp)
+summary(model5.temp1)
+model5.rain = dynlm(Y.t ~ +rain+L(Y.t , k = 1 ) +  trend(Y.t) )
+model5.rain1 = dynlm(Y.t ~ -1 +rain+L(Y.t , k = 1 ) +  trend(Y.t) )
+summary(model5.rain)
+summary(model5.rain1)
+model5.rad = dynlm(Y.t ~ +rad+L(Y.t , k = 1 ) +  trend(Y.t) )
+model5.rad1 = dynlm(Y.t ~ -1 +rad+L(Y.t , k = 1 ) +  trend(Y.t) )
+summary(model5.rad)
+summary(model5.rad1)
+model5.RH = dynlm(Y.t ~ +RH+L(Y.t , k = 1 ) +  trend(Y.t) )
+model5.RH1 = dynlm(Y.t ~ -1+RH+L(Y.t , k = 1 ) +  trend(Y.t) )
+summary(model5.RH)
+summary(model5.RH1)
+```
+
+
+We will also attempt to fit model in the for loop below with dynamic number of lags of Y.t, and plot how MASE is influenced as each lag of Y.t is added to the model, starting with more recent to those further back in time (Meys, 2011). 
+
+Form Fig.12, we observed an overall decreasing trend on MASE values as more lags of Y.t are added to the model. Over the addition of 12 lags of Y.t the MASE value has droped to below 0.2. However, due to the plateau between lag 2-5 we decided to keep up to the 2nd lag of Y.t to avoid overfitting and overcomplicating the model.
+
+```{r}
+#formula for dynamic number of variables extracted from stackoverflow  https://stackoverflow.com/questions/4951442/formula-with-dynamic-number-of-variables
+
+MASE = numeric(12)
+for (i in 1:12){
+  formula <- as.formula(paste("Y.t ~", paste("L(Y.t, k=", 1:i, ")", collapse=" + "), 
+                              "+trend(Y.t)"))
+  model = dynlm(formula)
+  predicted_value = fitted(model)
+  MASE[i] = mase(ffd, predicted_value, step_size = 1)
+}
+
+MASE.dynlm <- data.frame(lags = 1:12, MASE = MASE)
+
+# Plot MASE values against lags
+ggplot(MASE.dynlm, aes(x=lags, y=MASE)) +
+  geom_line() +
+  geom_point() +
+  labs(title="Fig. 12 MASE values for increasing lags on Y.t",
+       x="Lags",
+       y="MASE") 
+
+```
+
+Model 5.ffd was fitted with the 1st and 2nd lag of Y.t and trend as a result of for loop above. It has negative R-squared value. Model 5.ffd1 is Model 5.ffd without intercept, with R-squared= 0.9807, lower than model5.RH1. 
+
+```{r}
+model5.ffd = dynlm(Y.t ~ +L(Y.t , k = 1 )+ L(Y.t , k = 2 )+  
+                   trend(Y.t))
+model5.ffd1 = dynlm(Y.t ~ -1 +L(Y.t , k = 1 )+ L(Y.t , k = 2 )+  
+                   trend(Y.t))
+summary(model5.ffd)
+summary(model5.ffd1)
+
+```
+
+
+Model5.RH1 is the best model using dynamic linear regression methods and was fitted with RH, the 1st and 2nd lag of Y.t, and trend. With a R-squared value of 0.9868 and MASE value of 0.610. Although BG test has p>0.05, significant lags in ACF plot for residuals suggests there is a little bit of serial correlation that model5.RH1 did not capture. Further investigations could be done to determine whether there is enough evidence of serial correlation. 
+
+```{r}
+
+checkresiduals(model5.RH1)
+
+predicted_value = fitted(model5.RH1)
+mase.5.RH1 = mase(ffd, predicted_value, step_size = 1)
+mase.5.RH1
+
+```
+
+Overall, Model 5.RH1 is the best model with dynamic linear regression methods.
+
+## Exponential smoothing models
+
+To fit different trend and seasonality patterns, we move on to fitting the data with exponential smoothing methods.
+
+### Simple exponential smoothing
+This method takes the forecast from the previous period and adjusts it using the forecast error. `h` specifies the number of time period that we wish to forecast, so we set h to 4.
+
+Fit1.ses is fitted with MASE = 0.671. 
+
+```{r}
+fit1.ses <- ses(ffd, initial="simple", h=4)
+summary(fit1.ses)
+
+```
+
+### Holt's linear method
+
+This method is able to include trend in the forecast model on top of simple exponential smoothing. We fit model fit2.holt with this method and the MASE is 0.931.
+
+```{r}
+fit2.holt <- holt(ffd, initial="simple", h=4)
+summary(fit2.holt)
+
+```
+
+Using the for loop created in Assignment 2 we could modify the Holt’s linear method with exponential trend. As R returns error optimization failure when fitting the Holt’s linear model with exponential trend without specifying values for alpha and beta, we create a for loop to find the best alpha and beta to use when fitting with Holt's linear method below. To save computational power we set the initial value for alpha and beta as 0.1 by sequences of 0.1. The for loops found best value 0.5 for alpha, and 0.3 for beta. Fit3.holt is fitted using Holt’s linear method with exponential trend with best alpha and beta values and it has MASE 0.909.
+
+```{r}
+#find best alpha and beta
+best.mase <- Inf
+best.alpha <- NA
+best.beta <- NA
+#Due to limited computational power of my device we are unable to compute sequences 
+#by smaller than 0.1
+ for (alpha in seq(0.1, 1, by=0.1)) {
+  for (beta in seq(0.1, 1, by=0.1)) {
+    fit <- holt(ffd, alpha=alpha, beta=beta, exponential=TRUE, h=4, initial="simple")
+    fcast <- fitted(fit)
+    current.mase <- mase(ffd, fcast, step_size=1)
+    if (current.mase < best.mase) {
+      best.mase <- current.mase
+      best.alpha <- alpha
+      best.beta <- beta
+    }
+  }
+}
+best.alpha
+best.beta
+
+
+
+
+
+fit3.holt <- holt(ffd, alpha = 0.5, beta=0.3, initial="simple", exponential=TRUE, h=4) 
+summary(fit3.holt)
+
+```
+
+Fit4.holt modified the Holt’s linear method with damped trend, with MASE = 0.632.
+
+```{r}
+fit4.holt <- holt(ffd, initial="simple",damped=TRUE, h=4) 
+summary(fit4.holt)
+
+```
+
+
+### Holt-Winters’ Trend and Seasonality Method
+
+This method accounts for both trend and seasonality in the data. As data is yearly with no seasonality we skip this method.
+
+*Diagnostic check*
+
+Out of models fitted with exponential smoothing methods, in terms of MASE, fit4.holt is the best.  
+
+Residuals of fit4.holt shows no obvious or trend. Ljung-Box test result and ACF of residuals suggest no serial correlation is left in residuals. Point forecast are given in summary() with lower and higher bound at 95% confidence level.
+
+```{r}
+checkresiduals(fit4.holt)
+summary(fit4.holt)
+```
+
+Overall, fit4.holt using Holt’s linear method with damped trend is selected as the best model using exponential smoothing methods and the original `ffd`.
+
+## State-space models
+
+Lastly, the state-space model approach is used. This approach includes additive and multiplicative error terms into the exponential smoothing models using the ets() function, which stands for error, trend and seasonality and we use `A` or `M` to specify whether it is additive or multiplicative. When damped option equals `True` we add `d` to the model name. We fit all seasonality with `N` as there is no seasonality in yearly data.
+
+The auto fit function is specified as model = 'ZZZ'. This allows R to find the best fitted ets model automatically, however, it does not guarentee the best result. After the ZZZ model, we fit all other allowed combinations from additive error terms to multiplicative error terms to see if they give a better fit in terms of MASE.
+
+The model fit.ZZZ finds ETS(M,N,N) to be the best fitting model with MASE 0.661, AIC=307, BIC=311.
+
+```{r}
+fit.ZZZ = ets(ffd,model = "ZZZ")
+summary(fit.ZZZ)
+```
+
+### Additive error terms
+
+We fit linear ETS models (A,N,N), (A,A,N), (A,Ad,N). None of the models has better MASE than fit.ZZZ and they are all worse-fitted than the naive function with MASE>1.
+
+
+```{r}
+#Additive error terms
+fit.ANN = ets(monthly.mortality, model = "ANN")
+summary(fit.ANN) 
+
+
+
+fit.AAN = ets(monthly.mortality, model = "AAN")
+summary(fit.AAN)
+
+
+
+fit.AAdN = ets(monthly.mortality, model = "AAN", damped = TRUE)
+summary(fit.AAdN)
+
+
+
+```
+
+### Multiplicative error terms
+
+Then we fit models with multiplicative error terms. We skip ets(M,N,N) as fitted by the auto-fit function. Among all models fitted, no models is better fitted than the naive model as they all have MASE >1 from summary(), so we move forward with ets(M,N,N) as the best model using this method.
+
+```{r}
+# multiplicative error terms
+
+fit.MAN = ets(monthly.mortality, model = "MAN")
+summary(fit.MAN)# 
+
+fit.MAdN = ets(monthly.mortality, model = "MAN", damped = TRUE)
+summary(fit.MAdN)#
+
+# multiplicative error terms with multiplicative trend 
+fit.MMN = ets(monthly.mortality, model = "MMN")
+summary(fit.MMN) # 
+
+fit.MMdN = ets(monthly.mortality, model = "MMN", damped = TRUE)
+summary(fit.MMdN)
+
+```
+
+*Diagnostic check*
+
+ACF plot of residuals and Ljung-Box test result (p>0.05) suggest that the model ets(M,N,N) can capture serial correlation in the data. Residuals seem to be normally distributed. 
+
+```{r}
+checkresiduals(fit.ZZZ)
+```
+
+Overall, the best fitted model in terms of AIC, BIC, and MASE using ets models is fit.ZZZ with ETS(M,N,N), MASE= 0.661, AIC=307, BIC=311.
+
+*Point forecast and CI*
+
+We calculate point forecast using fit.ZZZ model and give upper bound of 95% CI `upper.95.int` (256.1228, 256.1228 ,256.1228, 256.1228)and lower bound `lower.95.int` (162.7732, 162.7732, 162.7732, 162.7732). `pointforecast` 4 years ahead ffd is 209.448, 209.448, 209.448, 209.448.
+
+```{r}
+
+frc.fit.ZZZ = forecast.ets(fit.ZZZ, h=4)
+
+upper.95.int = frc.fit.ZZZ$upper[,2] #extract the upper bound
+upper.95.int
+lower.95.int = frc.fit.ZZZ$lower[,2]#extract the lower bound 
+lower.95.int
+pointforecast = frc.fit.ZZZ$mean
+pointforecast
+
+
+```
+
+# Model Selection 
+
+From the model fitting section, we compare the best model fitted with each method to decide which model is to be used for forecasting yearsly ffd 4 years ahead. We combine their AIC, BIC and MASE values into a table, by extracting AIC, BIC values from models, and assigned MASE values from each model. We then combine all values into a data frame to compare the best models from each method:
+
+- state-space model: fit.ZZZ with ETS(M,N,N)
+- exponential smoothing model: fit4.holt 
+- time series regression model: model1.RH fitted with `RH.diff` and `ffd.diff`
+- dynamic linear regression model: model5.RH1 with no intercepts, lag 1 and 2 of Y.t, and trend
+
+
+```{r}
+# Extract AIC and BIC from models
+aicbic.ZZZ <- c(AIC(fit.ZZZ), BIC(fit.ZZZ))
+aicbic.holt <- c(AIC(fit4.holt$model), BIC(fit4.holt$model))
+aicbic.1.RH <-c(AIC(model1.RH$model), BIC(model1.RH$model))
+aicbic.5.RH1 <-c(AIC(model5.RH1), BIC(model5.RH1))
+# list MASE from models
+mase.ZZZ <- 0.661
+mase.holt <- 0.632
+mase.1.RH <- round(unlist(MASE(model1.RH)), 3) 
+mase.5.RH1 <- round(mase.5.RH1,3)
+
+# Combine into a table
+Model_comparison <- data.frame(
+  Model = c("fit.ZZZ", "fit4.holt", "modeL1.RH", "model5.RH1"),
+  AIC = c(aicbic.ZZZ[1], aicbic.holt[1], aicbic.1.RH[1], aicbic.5.RH1[1]),
+  BIC = c(aicbic.ZZZ[2], aicbic.holt[2], aicbic.1.RH[2], aicbic.5.RH1[2]),
+  MASE = c(mase.ZZZ, mase.holt, mase.1.RH, mase.5.RH1)
+)
+
+```
+
+Although model5.RH1 has the lowest AIC/BIC values, it has R^2 =0.98 as found in previous steps, and is prone to overfitting. From the table, we could see that model1.RH is the best fitted with the second lowest AIC and BIC, and lowest MASE among the 4 models. 
+
+```{r}
+Model_comparison
+```
+
+# Forecasting and task 2 conclusion 
+
+Finally, we forecast 4 years ahead of `ffd` by specifying h=4. We input covariate RHx obtained at the beginning of task2. Point forecast values of ffd are 208.9265, 214.7493, 209.4796 and 202.3298 for the next 4 years.
+
+First, we combine the actual value and forecasted value with comb(), and use pmin() to put the first and second column from comb together and find the minimum value, and set na.rm = TRUE to allow rows with NA, as each row has NA in either column in comb. Next, we revert the data back to the original ffd series with diffinv() as we used differenced data for model fitting. xi= ffd[1] adds the first values from the original ffd data as they were not in
+the differenced series. Then we plot 4 years forecast of ffd with the original series. Fig.13 shows the forecast in red with the original series in black.
+
+
+```{r}
+model1.RH=dlm(x=as.vector(RH.diff), y=as.vector(ffd.diff),q=5)
+# 
+forecasts.model1 = dLagM::forecast(model = model1.RH ,  x = RHx , h = 4)$forecast
+forecasts.model1=ts(forecasts.model1, start=2015)
+
+comb= ts.union(ffd.diff, forecasts.model1)
+ffd.combined = pmin(comb[,1], comb[,2], na.rm = TRUE)
+back.series = diffinv(ffd.combined, xi = ffd[1],lag =1)
+
+
+frc.original = window(back.series, start = 2015) #back-differenced forecasts
+frc.original#point forecast
+plot(ffd, xlim = c(1986,2019),
+ylab="ffd",
+main = "Fig. 13 Original series, forecasts for the yearly ffd series",
+cex.main=0.75)
+lines(ts(frc.original, start = 2015), col = "red")
+
+
+
+
+```
+
+In conclusion, Task 2 found the time series regression model model1.RH to be the most suitable model for forecasting 4 years ahead of ffd from 2015 to 2018, forecasted values are 208.9265, 214.7493, 209.4796 and 202.3298 for the next 4 years.
+
+# Task 3a
+
+Task 3 involves analyzing the relationship between 81 species of plants' relative flowering order similarity Rank-based Order similarity metric (RBO) and climate conditions in Victoria from 1984 to 2014, using their rank orders of time taken to flower(FFD) in 1983 as baseline. 
+
+Part a of Task 3 aims to:
+
+- model using univariate climate regressors with DLM, ARDL, polyck, koyck, dynlm methods
+- find optimal models within each method, using values of R squared, AIC, BIC, MASE as is appropriate
+- forecast RBO three years ahead using each regressor one at a time and provide point forecast and confidence intervals with the most optimal model overall
+
+## Data description 
+### Import and inspect data
+
+First, we import `RBO data` and save as a data frame. After dropping the Year variable, the RBO dataset contains 31 observations for 5 variables:
+
+- `RBO` contains rank-based order similarity metric for the year 
+- `Temperature` contains yearly averaged temperature
+- `Rainfall` contains yearly averaged rainfall
+- `Radiation` contains yearly averaged radiation
+- `RelHumidity` contains yearly averaged relative humidity
+
+All variables are numeric and above 0. There is no missing value from this dataset.
+
+```{r}
+RBO <- read.csv("RBO.csv")
+class(RBO)
+tail(RBO)
+RBO = RBO[-1]
+summary(RBO)
+#check for null and NA 
+anyNA(RBO)
+is.null(RBO)
+
+```
+
+We also import coraviate x-values for task 3 to forecast 3 years ahead rbo with, and assign them by variable names plus x.
+
+```{r}
+task3x <- read.csv("Covariate x-values for Task 3  .csv")
+class(task3x)
+tail(task3x)
+task3x <- na.omit(task3x)
+
+tempx = task3x$Temperature
+rainx = task3x$Rainfall
+radx = task3x$Radiation
+RHx=task3x$RelHumidity
+```
+
+### Convert variables to ts objects and check correlation
+
+Next, we convert variables into time series objects using ts() and set `start` to 1984 and `frequency` to 1 for yearly data. Time series objects for the 5 variables are renamed after conversion for simplicity and to avoid overlapping with variable names already used:
+
+- rename `RBO` to `rbo` to avoid overlapping with dataset name
+- rename `Temperature` to `tem` to avoid overlapping with Task 1 variable name
+- shortened `Rainfall` to `rain`
+- shortened `Radiation` to `rad`
+- shortened `RelHumidity` to `hum`
+
+```{r}
+RBO.ts = ts(RBO, start=1984,frequency = 1)
+
+rbo = ts(RBO$RBO, start=1984,frequency = 1)
+tem = ts(RBO$Temperature, start=1984,frequency = 1)
+rain = ts(RBO$Rainfall, start=1984,frequency = 1)
+rad =ts(RBO$Radiation, start=1984,frequency = 1)
+hum = ts(RBO$RelHumidity, start=1984,frequency = 1)
+
+```
+
+We perform scaling to plot all variables side by side to see correlation of variables with rbo.
+
+From Fig.0 and the correlation matrix, we can see that rainfall and temperature have weak to moderate positive correlation with rbo, radiation and RelHumidity have weak to moderate negative correlation with rbo.
+
+```{r}
+
+RBO.scale = scale(RBO.ts)
+plot(RBO.scale, plot.type="s", col=c("blue","gold","red", "purple","black"), 
+     main = "Fig. 0 RBO series")
+legend("topleft", lty=1,cex=0.5,text.width=0.85
+       ,col=c("blue",  "gold","red","purple","black"),
+       c("rbo", "tem", "rain", "rad", "hum"))
+
+cor(RBO.ts)#correlation
+```
+
+## Data exploration
+
+In this section, we explore climate variables `tem`, `rain`, `rad`, `hum` and `rbo`. As data is yearly, we do not perform decomposition of components.
+
+For variable `tem` in Fig 1.1, 1.2, 1.3:
+
+- no obvious evidence of overall trend with fluctuations
+- no obvious evidence of seasonality
+- no obvious evidence of autocorrelation
+- no obvious evidence of intervention
+- no obvious evidence of changing variance
+
+ADF test returns p>0.05, so we fail to reject H0 that data is non stational but PP test both returned p-value less than 0.05, for us to reject the null hypothesis that the series is non-stational and conclude that the series is stational. This disagreement could be caused due to small sample size. Fig 1.2, 1.3 and kpss test result all support that data is stational.
+
+```{r}
+ts_analysis(data = tem, 
+            title = "Fig 1.1 Time series plot of yearly averaged temperature in 
+            Victoria.",
+            ylab = "Yearly averaged temperature", 
+            acf_title = "Fig 1.2 ACF for yearly averaged temperature", 
+            pacf = "Fig 1.3 PACF for yearly averaged temperature")
+
+stationarity_test(tem)
+kpss.test(tem)
+```
+
+For variable `rain` in Fig 2.1, 2.2, 2.3:
+
+- no obvious evidence of overall trend with fluctuations
+- no obvious evidence of seasonality
+- no obvious evidence of autocorrelation
+- no obvious evidence of intervention
+- no obvious evidence of changing variance
+
+ADF test returns p>0.05, so we fail to reject H0 that data is non stational but PP test both returned p-value less than 0.05, for us to reject the null hypothesis that the series is non-stational and conclude that the rain series is stational. This disagreement could be caused due to small sample size. Fig 2.2, 2.3 and kpss test result all support that data is stational.
+
+```{r}
+ts_analysis(data = rain, 
+            title = "Fig 2.1 Time series plot of yearly averaged rainfall in 
+            Victoria.",
+            ylab = "Yearly averaged rainfall", 
+            acf_title = "Fig 2.2 ACF for yearly averaged rainfall", 
+            pacf = "Fig 2.3 PACF for yearly averaged rainfall")
+
+stationarity_test(rain)
+kpss.test(rain)
+```
+
+For variable `rad` in Fig 3.1, 3.2, 3.3:
+
+- no obvious evidence of overall trend with fluctuations
+- no obvious evidence of seasonality
+- evidence of autocorrelation before 1992 with succeeding time points in Fig 3.1, supported by significant lags in Fig.3.2 and Fig 3.3
+- there is a drop around 1992 which might be intervention
+- no obvious evidence of changing variance
+
+ADF test and PP test both returned p-value greater than 0.05, therefore, we fail to reject the null hypothesis that the series is non-stational.
+
+```{r}
+ts_analysis(data = rad, 
+            title = "Fig 3.1 Time series plot of yearly averaged radiation in 
+            Victoria.",
+            ylab = "Yearly averaged radiation", 
+            acf_title = "Fig 3.2 ACF for yearly averaged radiation", 
+            pacf = "Fig 3.3 PACF for yearly averaged radiation")
+
+stationarity_test(rad)
+```
+
+For variable `hum` in Fig 4.1, 4.2, 4.3:
+
+- no obvious evidence of overall trend with fluctuations
+- no obvious evidence of seasonality
+- evidence of autocorrelation in Fig.4.2 with a significant lag 11
+- no obvious evidence of intervention
+- no obvious evidence of changing variance every 3-6 years
+
+ADF test returns p>0.05, so we fail to reject H0 that data is non stational but PP test both returned p-value less than 0.05, for us to reject the null hypothesis that the series is non-stational and conclude that the humidity series is stational. This disagreement could be caused due to small sample size. Although Fig4.2 has a significant lag 11, kpss test result all support that data is stational.
+
+```{r}
+ts_analysis(data = hum, 
+            title = "Fig 4.1 Time series plot of yearly averaged relative 
+            humidity in Victoria.",
+            ylab = "Yearly averaged relative humidity", 
+            acf_title = "Fig 4.2 ACF for yearly averaged relative humidity", 
+            pacf = "Fig 4.3 PACF for yearly averaged relative humidity")
+
+stationarity_test(hum)
+kpss.test(hum)
+```
+
+For variable `rbo`:
+
+- overall trend unclear but it looks like a decreasing trend due to the drop around 1995 to 1996
+- no obvious evidence of seasonality
+- decaying pattern in Fig 5.2, significant first lag in Fig5.3 and succeeding points in Fig 5.1 suggests autocorrelation
+- evidence of intervention around 1995-1996
+- no obvious evidence of changing variance
+
+ADF test returns p-value greater than 0.05, therefore, we fail to reject the null hypothesis that the series is non-stational. However, PP test result disagrees with p <0.05, suggesting that we reject H0 and conclude the series is stational, possibly due to the small sample size. Due to the disagreement between ADF and PP test, we introduce a different stationarity test kpss test. With p<0.05 from the kpss test, so we reject the null hypothesis and conclude that the series is non-stational with p<0.05. Decaying pattern in Fig 5.2, significant first lag in Fig5.3 also suggests trend exist in the rbo series.
+
+
+
+```{r}
+ts_analysis(data = rbo, 
+            title = "Fig 5.1 Time series plot of yearly RBO in Victoria.",
+            ylab = "Yearly RBO", acf_title = "Fig 5.2 ACF for yearly RBO", 
+            pacf = "Fig 5.3 PACF for Yearly RBO")
+
+stationarity_test(rbo)
+kpss.test(rbo)
+```
+
+## Apply differencing
+
+Since `rbo` is non-stationary, we apply differencing to remove trend.
+
+Fig 6.1 to Fig 8.3 shows the progress of 1st, 2nd and 3rd differencing of the rbo series. After 3rd differencing, `rbo.diff3` still has significant lags in ACF and PACF plots, however, p<0.05 from ADF and PP unit root test and p>0.05 from kpss test suggests that stationarity has been achieved.
+
+
+```{r}
+
+rbo.diff = diff(rbo)
+ts_analysis(data = rbo.diff, 
+            title = "Fig 6.1 Time series plot of yearly RBO in Victoria after 
+            first differencing.",
+            ylab = "Yearly RBO", acf_title = "Fig 6.2 ACF for yearly RBO after
+             first differencing", 
+            pacf = "Fig 6.3 PACF for Yearly RBO after first differencing")
+
+stationarity_test(rbo.diff)
+kpss.test(rbo.diff)
+
+rbo.diff2 = diff(rbo.diff)
+ts_analysis(data = rbo.diff2, 
+            title = "Fig 7.1 Time series plot of yearly RBO in Victoria after 
+            2nd differencing.",
+            ylab = "Yearly RBO", acf_title = "Fig 7.2 ACF for yearly RBO after 
+            2nd differencing", 
+            pacf = "Fig 7.3 PACF for Yearly RBO after 2nd differencing")
+
+stationarity_test(rbo.diff2)
+kpss.test(rbo.diff2)
+
+rbo.diff3 = diff(rbo.diff2)
+ts_analysis(data = rbo.diff3, 
+            title = "Fig 8.1 Time series plot of yearly RBO in Victoria after 
+3rd differencing.",
+            ylab = "Yearly RBO", acf_title = "Fig 8.2 ACF for yearly RBO after 
+3rd differencing", 
+            pacf = "Fig 8.3 PACF for Yearly RBO after 3rd differencing")
+
+stationarity_test(rbo.diff3)
+kpss.test(rbo.diff3)
+```
+
+`rad` also requires differencing as it was non-stational. Fig 9.1 to Fig 11.3 shows the progress of 1st, 2nd and 3rd differencing of the radiation series. After 3rd differencing, `rad.diff3` still show significant lags in ACF and PACF plots, however, p<0.05 from ADF and PP unit root test and p>0.05 from kpss test suggests that stationarity has been achieved for `rad.diff3`.
+
+
+```{r}
+rad.diff = diff(rad)
+ts_analysis(data = rad.diff, 
+            title = "Fig 9.1 Time series plot of yearly radiation in Victoria after 
+            first differencing.",
+            ylab = "Yearly Radiation", acf_title = "Fig 9.2 ACF for yearly radiation after
+             first differencing", 
+            pacf = "Fig 9.3 PACF for Yearly radiation after first differencing")
+
+stationarity_test(rad.diff)
+kpss.test(rad.diff)
+
+rad.diff2 = diff(rad.diff)
+ts_analysis(data = rad.diff2, 
+            title = "Fig 10.1 Time series plot of yearly radiation in Victoria after 
+            2nd differencing.",
+            ylab = "Yearly radiation", acf_title = "Fig 10.2 ACF for yearly radiation after
+             2nd differencing", 
+            pacf = "Fig 10.3 PACF for Yearly radiation after 2nd differencing")
+
+stationarity_test(rad.diff2)
+kpss.test(rad.diff2)
+
+rad.diff3 = diff(rad.diff2)
+ts_analysis(data = rad.diff3, 
+            title = "Fig 11.1 Time series plot of yearly radiation in Victoria after 
+            3rd differencing.",
+            ylab = "Yearly radiation", acf_title = "Fig 11.2 ACF for yearly radiation after
+             3rd differencing", 
+            pacf = "Fig 11.3 PACF for Yearly radiation after 3rd differencing")
+
+stationarity_test(rad.diff3)
+kpss.test(rad.diff3)
+```
+
+We have demonstrated how non-stationarity could be handled using differencing however due to the small sample size, we will fit models using original series to preserve information.
+
+## Time series regression models
+
+To find the most suitable model for forecasting yearly RBO 3 years ahead, we attempt to fit models using the time series regression method. 
+
+### Finite distributed lag model
+
+First we fit finite distributed lag model using for loops, and get their AIC and BIC scores. From the for
+loop, the optimal AIC and BIC scores and MASE values tend to occur at q=1. `tem`, `rain``rad`, and `hum` is each used as the explanatory variable with dependent variable `rbo`.
+
+```{r}
+for(i in 1:5){
+model1=dlm(x=as.vector(tem), y=as.vector(rbo),q=i)
+cat("q=",i,"AIC=",AIC(model1$model), "BIC=",BIC(model1$model),"\n")
+}
+```
+
+
+
+```{r}
+for(i in 1:5){
+  model1=dlm(x=as.vector(rain), y=as.vector(rbo),q=i)
+  cat("q=",i,"AIC=",AIC(model1$model), "BIC=",BIC(model1$model), "MASE=", MASE(model1)$MASE,"\n")
+  
+}
+
+```
+
+```{r}
+for(i in 1:5){
+  model1=dlm(x=as.vector(rad.diff3), y=as.vector(rbo.diff3),q=i)
+  cat("q=",i,"AIC=",AIC(model1$model), "BIC=",BIC(model1$model), "MASE=", MASE(model1)$MASE,"\n")
+  
+}
+
+```
+
+```{r}
+for(i in 1:5){
+  model1=dlm(x=as.vector(hum), y=as.vector(rbo),q=i)
+  cat("q=",i,"AIC=",AIC(model1$model), "BIC=",BIC(model1$model), "MASE=", MASE(model1)$MASE,"\n")
+  
+}
+
+```
+
+*Model fitting* 
+  
+We now fit models with the optimal q=5 obtained from the for loop, using one predictor at a time.
+
+```{r}
+
+model1.temp=dlm(x=as.vector(tem), y=as.vector(rbo),q=1)
+
+model1.rain=dlm(x=as.vector(rain), y=as.vector(rbo),q=1)
+model1.rad=dlm(x=as.vector(rad), y=as.vector(rbo),q=1)
+model1.RH=dlm(x=as.vector(hum), y=as.vector(rbo),q=1)
+
+
+```
+
+*Shortlisitng*
+We now sort models by their AIC, BIC and MASE to find the best fitted model using this method. The function was user-defined previously. 
+
+Warning occurs as models are not all fitted to the same number of observations,  Model1.temp has the best fit out of all finite distributed lag models, with AIC=-101, BIC=-96, and the second lowest MASE=0.92 (MASE<1 so it has better fit than the average one-step naive forecast). We move on to checking summary and residuals of model1.temp.
+
+```{r}
+aic = AIC(model1.temp$model, model1.rain$model, model1.rad$model, model1.RH$model)
+bic = BIC(model1.temp$model, model1.rain$model, model1.rad$model, model1.RH$model)
+mase = MASE(model1.temp, model1.rain, model1.rad, model1.RH)
+
+shortlist(aic,score = "aic")
+shortlist(bic,score = "bic")
+shortlist(mase,score = "mase")
+```
+
+*Diagnostic check*
+  
+Model1.temp, R^2=0.184 at 5% significance level. The Breusch-Godfrey(bg) test checks whether there is serial correlation of any order up to the displayed order (H0=no serial correlation), as p<0.05, we reject the null hypothesis and conclude that there is serial correlation up to the displayed order, which is confirmed in residual plots with significant lags. 
+
+NShapiro-wilk test shows that residuals are normally distributed. Variance inflation factors (VIFs) result shows minimal multicollinearity with VIF slightly above 1.
+
+```{r}
+
+summary(model1.temp)
+diagnostic_check(model1.temp)
+
+```
+
+### Polynomial model
+
+For loops result shows although MASE values for q=3 is not the smallest, q=3 returns the lowest MASE and AIC, BIC values. So we fit models using each predictor using q=3 and specify k=2 as second order polynomial is used.
+
+```{r}
+
+for(i in 2:5){
+  model2=polyDlm(x=as.vector(tem), y=as.vector(rbo), q = i, k = 2, show.beta = FALSE)
+  cat("q=",i,"AIC=",AIC(model2$model), "BIC=",BIC(model2$model), "MASE=",MASE(model2)$MASE,"\n")
+}
+
+for(i in 2:5){
+  model2=polyDlm(x=as.vector(rain), y=as.vector(rbo), q = i, k = 2, show.beta = FALSE)
+  cat("q=",i,"AIC=",AIC(model2$model), "BIC=",BIC(model2$model), "MASE=",MASE(model2)$MASE,"\n")
+}
+
+for(i in 2:5){
+  model2=polyDlm(x=as.vector(rad), y=as.vector(rbo), q = i, k = 2, show.beta = FALSE)
+  cat("q=",i,"AIC=",AIC(model2$model), "BIC=",BIC(model2$model), "MASE=",MASE(model2)$MASE,"\n")
+}
+
+for(i in 2:5){
+  model2=polyDlm(x=as.vector(hum), y=as.vector(rbo), q = i, k = 2, show.beta = FALSE)
+  cat("q=",i,"AIC=",AIC(model2$model), "BIC=",BIC(model2$model), "MASE=",MASE(model2)$MASE,"\n")
+}
+
+```
+
+*Model fitting* 
+  
+```{r}
+
+model2.temp = polyDlm(x=as.vector(tem), y=as.vector(rbo), q = 3, k = 2, show.beta = FALSE)
+model2.rain = polyDlm(x=as.vector(rain), y=as.vector(rbo), q = 3, k = 2, show.beta = FALSE)
+model2.rad = polyDlm(x=as.vector(rad), y=as.vector(rbo), q = 3, k = 2, show.beta = FALSE)
+model2.RH = polyDlm(x=as.vector(hum), y=as.vector(rbo), q = 3, k = 2, show.beta = FALSE)
+
+```
+
+*Shortlisting*
+  
+Sorting of metrics shows that model2.rain ranks the best and has MASE=0.949, AIC=-99, BIC=-92, so it is the best fitted model using polydlm. 
+
+```{r}
+aic = AIC(model2.temp$model, model2.rain$model, model2.rad$model, model2.RH$model)
+bic = BIC(model2.temp$model, model2.rain$model, model2.rad$model, model2.RH$model)
+mase = MASE(model2.temp, model2.rain, model2.rad, model2.RH)
+
+shortlist(aic,score = "aic")
+shortlist(bic,score = "bic")
+shortlist(mase,score = "mase")
+```
+
+*Diagnostic check*
+  
+Model2.rain has poor fit with R-squared = 0.211. Serial correlation were not captured by the model as shown in residuals and result of BG test (p<0.05). Coefficients z.t1 and z.t2 have high VIFs (above 10), suggesting high effect of multicollinearity. Residuals are normal based on shapiro-wilk test result however visual inspection of histogram disagrees.
+
+```{r}
+summary(model2.rain)
+diagnostic_check(model2.rain)
+```
+
+### Koyck model
+
+The Koyck distributed lag model assumes more recent lagged values of independent variables have a greater impact on the dependent variable than those that are further back in time.
+
+Results from fitting Model3 suggest a worse fit than the naive method with MASE = 1.03. Model3 is significant and has R square value 0.76.  Residuals show clear seasonal pattern and serial correlation. VIF close to 1 suggests no multicollinearity.
+
+
+*Model fitting* 
+  
+We now fit models using one predictor at a time. 
+
+```{r}
+
+model3.temp=koyckDlm(x=as.vector(tem), y=as.vector(rbo))
+model3.rain=koyckDlm(x=as.vector(rain), y=as.vector(rbo))
+model3.rad=koyckDlm(x=as.vector(rad), y=as.vector(rbo))
+model3.RH=koyckDlm(x=as.vector(hum), y=as.vector(rbo))
+
+```
+
+*Shortlisitng*
+
+Sorting function shows that model3.RH fitted with `hum` returns the lowest MASE values, so it is the best fitted model using koyck method. 
+
+```{r}
+
+mase = MASE(model3.temp, model3.rain, model3.rad, model3.RH)
+shortlist(mase,score = "mase")
+```
+
+
+
+*Diagnostic check*
+  
+Model3.RH has MASE=0.956, and R-squared = -0.06, which may be due to small sample size. Serial correlation is not left in residuals ACF plot as confirmed by result of BG test (p>0.05). VIF values close to 1 indicate very minimal effect of multicollinearity.  Shapiro-wilk test result (p>0.05) suggest that residuals are normally distributed.
+
+```{r}
+summary(model3.rad, diagnostics = TRUE)
+diagnostic_check(model3.rad)
+```
+
+### Autoregressive dlm
+
+The autoregressive distributed lag model recognizes that dependent variable Y could be influence by its own past values and past values of independent variable.  Overall, the for loop found p=3 and q=2 returns the relatively smallest combination of AIC, BIC and MASE value for `tem` or `rain` or `rad` vs `rbo`. For `hum` vs `rbo` p=2 and q=3 is optimal.
+
+```{r} 
+for(i in 1:5){
+  for(j in 1:5){
+    model4 = ardlDlm(x=as.vector(tem), y=as.vector(rbo), p = i, q = j)
+    cat("p = ", i, "q = ", j, "AIC = ", AIC(model4$model), "BIC = ", BIC(model4$model), 
+        "MASE=", MASE(model4)$MASE, "\n")
+  }
+}
+
+```
+
+```{r} 
+for(i in 1:5){
+  for(j in 1:5){
+    model4 = ardlDlm(x=as.vector(rain), y=as.vector(rbo), p = i, q = j)
+    cat("p = ", i, "q = ", j, "AIC = ", AIC(model4$model), "BIC = ", BIC(model4$model), 
+        "MASE=", MASE(model4)$MASE, "\n")
+  }
+}
+
+```
+
+```{r} 
+for(i in 1:5){
+  for(j in 1:5){
+    model4 = ardlDlm(x=as.vector(rad), y=as.vector(rbo), p = i, q = j)
+    cat("p = ", i, "q = ", j, "AIC = ", AIC(model4$model), "BIC = ", BIC(model4$model), 
+        "MASE=", MASE(model4)$MASE, "\n")
+  }
+}
+
+```
+
+```{r} 
+for(i in 1:5){
+  for(j in 1:5){
+    model4 = ardlDlm(x=as.vector(hum), y=as.vector(rbo), p = i, q = j)
+    cat("p = ", i, "q = ", j, "AIC = ", AIC(model4$model), "BIC = ", BIC(model4$model), 
+        "MASE=", MASE(model4)$MASE, "\n")
+  }
+}
+
+```
+
+*Model fitting*
+  
+Now we fit tem, rain and rad using p=3 and q=2, and hum using p=2, q=3 found from the for loop above.
+
+```{r}
+
+model4.temp = ardlDlm(x = as.vector(tem), y = as.vector(rbo),p = 3, q = 3)
+model4.rain = ardlDlm(x = as.vector(rain), y = as.vector(rbo),p = 3, q = 3)
+model4.rad = ardlDlm(x = as.vector(rad), y = as.vector(rbo),p = 3, q = 3)
+model4.RH = ardlDlm(x = as.vector(hum), y = as.vector(rbo),p = 2, q = 3)
+```
+
+*Shortlisting*
+  
+We calculate AIC, BIC, and MASE for the fitted models using ardlDlm() and sort scores to shortlist the best model fitted based on these metrics. Model4.temp was shortlisted with the lowest AIC, BIC and second smallest MASE.
+
+```{r}
+aic = AIC(model4.temp$model, model4.rain$model, model4.rad$model, model4.RH$model)
+bic = BIC(model4.temp$model, model4.rain$model, model4.rad$model, model4.RH$model)
+mase = MASE(model4.temp, model4.rain, model4.rad, model4.RH)
+
+
+shortlist(aic,score = "aic")
+shortlist(bic,score = "bic")
+shortlist(mase,score = "mase")
+```
+
+*Diagnostic check*
+  
+Model4.temp was fitted with p=3 and q=2 and has AIC=-111, BIC=-99, MASE = 0.78 and R-squared=0.54. 
+
+From residuals, The ACF plot of residuals has all values within the line. P-value of Breusch-Godfrey test is greater than 0.05, so we fail to reject H0 and conclude that there is no serial correlation of order up to 1. From this we can conclude that the model has captured underlying patterns in the data. Shapiro-wilk test result suggests that residuals follow normal distribution with p-value >0.05. Test values for VIF suggests very low multicollinearity. 
+
+```{r}
+summary(model4.temp)
+diagnostic_check(model4.temp)
+```
+
+Overall, Model4.temp is the best time series regression model to be included in the Model Selection section. Model4.temp is fitted with the` tem` and `rbo`.
+
+*Point forecast*
+
+point forecast and 95% CI are displayed below for model4.temp
+```{r}
+
+
+forecast1 <- dLagM::forecast(model4.temp,x = tempx ,h = 3, interval = TRUE) 
+forecast1
+
+
+```
+
+## Dynamic linear regression models (dynlm)
+
+The dynamic linear regression methods address multicollinearity better in the data. We now fit the series using dynamic linear regression models with Y.t = rbo. To calculate MASE values, we use the mase() function from the `Metrics` package for all dynlm models. Original data can be used as the model can deal with trend. For yearly data we don't fit season(Y.t) as frequency is 1.
+
+Model5 was fitted with each variable, the first lag of Y.t, trend. Among all models, model5.temp has the highest R-squared value of 0.423.
+
+```{r}
+
+Y.t = rbo
+
+
+model5.temp = dynlm(Y.t ~ +tem +L(Y.t , k = 1 ) +  trend(Y.t) )
+summary(model5.temp)
+
+model5.rain = dynlm(Y.t ~ +rain+L(Y.t , k = 1 ) +  trend(Y.t) )
+summary(model5.rain)
+
+model5.rad = dynlm(Y.t ~ +rad+L(Y.t , k = 1 ) +  trend(Y.t) )
+summary(model5.rad)
+
+model5.RH = dynlm(Y.t ~ +hum+L(Y.t , k = 1 ) +  trend(Y.t) )
+summary(model5.RH)
+
+```
+
+
+We will also attempt to fit model in the for loop below with dynamic number of lags of Y.t, and plot how MASE is influenced as each lag of Y.t is added to the model, starting with more recent to those further back in time (Meys, 2011). 
+
+Form Fig.12, we observed an overall decreasing trend on MASE values as more lags of Y.t are added to the model. Over the addition of 12 lags of Y.t the MASE value has droped to just above 0.2. However, due to the slow decline after lag 4 we decided to keep up to the 4thd lag of Y.t to avoid overfitting and overcomplicating the model.
+
+```{r}
+#formula for dynamic number of variables extracted from stackoverflow  https://stackoverflow.com/questions/4951442/formula-with-dynamic-number-of-variables
+
+MASE = numeric(12)
+for (i in 1:12){
+  formula <- as.formula(paste("Y.t ~", paste("L(Y.t, k=", 1:i, ")", collapse=" + "),  
+                              " +trend(Y.t)"))
+  model = dynlm(formula)
+  predicted_value = fitted(model)
+  MASE[i] = mase(rbo, predicted_value, step_size = 1)
+}
+
+MASE.dynlm <- data.frame(lags = 1:12, MASE = MASE)
+
+# Plot MASE values against lags
+ggplot(MASE.dynlm, aes(x=lags, y=MASE)) +
+  geom_line() +
+  geom_point() +
+  labs(title="Fig. 12 MASE values for increasing lags on Y.t",
+       x="Lags",
+       y="MASE") 
+
+```
+
+Model 5.rbo was fitted with the 1st to 4th lag of Y.t and trend as a result of for loop above. It has R-squared of 0.48 value.
+
+```{r}
+model5.rbo = dynlm(Y.t ~  +L(Y.t , k = 1 )+ L(Y.t , k = 2 )+  L(Y.t , k = 3 )
+                   + L(Y.t , k = 4 ) + trend(Y.t))
+
+summary(model5.rbo)
+
+
+```
+
+*Shortlisting*
+Both model5.temp and model5.rbo have relatively high R-squared value (0.42 for model5.temp and 0.48 for model5.rbo), so we calculate mase for both models to compare further. mase for model5.rbo is 0.58, lower than which of model5.temp, so we conclude that model5.rbo is the best model fitted with dynamic linear regression methods.
+
+```{r}
+
+predicted_value1 = fitted(model5.temp)
+mase.5.temp = mase(rbo, predicted_value1, step_size = 1)
+mase.5.temp
+predicted_value2 = fitted(model5.rbo)
+mase.5.rbo = mase(rbo, predicted_value2, step_size = 1)
+mase.5.rbo
+```
+
+Model5.rbo is the best model using dynamic linear regression methods. Its residuals have no significant lags in left ACF plot suggesting all serial correlation were captured by the model, also confirmed by BG test result as p>0.05. 
+
+*Diagnostic check*
+
+```{r}
+checkresiduals(model5.rbo)
+```
+Overall, Model 5.rbo is the best model with dynamic linear regression methods.
+
+*Point forecast*
+```{r}
+
+q = 3
+n = nrow(model5.rbo$model)
+rbo.frc = array(NA , (n + q))
+rbo.frc[1:n] = rbo[3:length(rbo)]
+
+#for(i in 1:q){
+#data.new =c(1,rbo.frc[n-1+i],rbo.frc[n-2+i],rbo.frc[n-3+i], rbo.frc[n-4+i])
+#rbo.frc[n+i] = as.vector(model5.rbo$coefficients) %*% data.new}
+
+plot(rbo,xlim=c(1984,2017),
+ylab='RBO',xlab='Year',
+main = "Fig. 13 Predicted rbo values using model5.rbo")
+lines(ts(rbo.frc[(n+1):(n+q)],start=c(2015)),col="blue")
+
+```
+
+# Model Selection 
+
+From the model fitting section, we compare the best model fitted with each method to decide which model is to be used for forecasting 3 years ahead of rbo. We combine their AIC, BIC and MASE and R^2 values into a table, by extracting AIC, BIC values from models, assigned MASE values from each model and R^2 values from summary(). We then combine all values into a data frame to compare the best models from each method:
+
+-
+- time series regression model: model4.temp fitted with `tem` and `rbo``
+- dynamic linear regression model: model5.rbo with lag 1 to 4 of Y.t, and trend
+
+
+```{r}
+# Extract AIC and BIC from models
+aicbic.temp <-c(AIC(model4.temp$model), BIC(model4.temp$model))
+aicbic.rbo <-c(AIC(model5.rbo), BIC(model5.rbo))
+# list MASE and R^2 from models
+
+mase.temp <- round(unlist(MASE(model4.temp)), 3) 
+mase.rbo <- round(mase.5.rbo,3)
+R2.temp <-0.54
+R2.rbo <-0.48
+# Combine into a table
+Model_comparison <- data.frame(
+  Model = c( "model4.temp", "model5.rbo"),
+  AIC = c( aicbic.temp[1], aicbic.rbo[1]),
+  BIC = c( aicbic.temp[2], aicbic.rbo[2]),
+  MASE = c(mase.temp, mase.5.rbo),
+  R2 =c(R2.temp,R2.rbo)
+)
+
+```
+
+From the table, we could see that model4.temp is the best fitted in terms of AIC and BIC and R^2, but model5.rbo has a lower MASE between the 2 models. Overall, we decided to move on with model4.temp as the best model to forecast rbo with as it performs better in terms of AIC and BIC and R^2.
+
+
+```{r}
+Model_comparison
+```
+
+# Forecasting for Task 3a
+
+Finally, we forecast 3 years ahead of `rbo` by specifying h=3. We input covariate `tempx` obtained at the beginning of task3. When forecasting with dLagM::forecast(), we use `interval =TRUE` to compute upper and lower 95% confidence interval with forecast1. We then combinFig.13 shows the forecast in red with the original series.
+
+```{r}
+forecast1 <- dLagM::forecast(model4.temp,x = tempx , h = 3, interval = TRUE) 
+forecast1
+
+upper.95.int = forecast1$forecasts[,3]
+upper.95.int
+lower.95.int = forecast1$forecasts[,1]#extract the lower bound
+lower.95.int
+centre = forecast1$forecasts[,2]
+centre
+
+length.int = abs(centre - upper.95.int)
+centre.ts=ts(centre, start=2015)
+comb= ts.union(rbo, centre.ts)
+rbo.combined = pmin(comb[,1], comb[,2], na.rm = TRUE)
+
+
+frc.original = window(rbo.combined, start = 2015) 
+frc.original.upper = frc.original + length.int
+frc.original.lower = frc.original - length.int
+plot(rbo, xlim = c(1986,2018),
+ylab="rbo",
+main = "Fig.14 Original series, forecasts and 95% forecast interval for the rbo series",
+cex.main=0.75)
+lines(frc.original, col = "red")
+lines(frc.original.upper, col = "blue")
+lines(frc.original.lower, col = "blue")
+```
+
+# Task 3b: Intervention RBO dynlm Analysis
+
+Flowering orders became more dissimilar particularly during the Millennium Drought (1997 – 2009). For Australia, the drought period occurred from 1996 to 2009. Part b of Task 3 aims to accommodate this information in the analysis of the Rank RBO. We aim to obtain the 3 year ahead forecasts using the dynlm package.
+
+## Dynamic linear regression models (dynlm) for Intervention
+
+We now fit the series using dynamic linear regression models with Y.t = rbo. To calculate MASE values, we use the mase() function from the `Metrics` package for all dynlm models. We T=10 to specify intervention started in 1996, 10 years after 1986. S.t is the step function whose value is 0 before T. After T (1996) the step function takes value 1. S.t.1 is the fisrt lag of the step function.
+
+Model6 was fitted with each predictor, the first lag of Y.t, S.t, S.t.1, and trend. We do not fit season as seasonality do not exist for yearly data. Model6.rad returned the best R^2 value of 0.62. We attempt to fit more models without trend as it's found not to be significant.
+
+```{r}
+
+Y.t = rbo
+T <-10 
+S.t = 1*(seq(Y.t) >= T) 
+S.t.1 = Lag(S.t,+1)
+
+model6.temp = dynlm(Y.t ~ +tem+L(Y.t , k = 1 ) + S.t + S.t.1 + 
+                   trend(Y.t) )
+summary(model6.temp)
+
+model6.rain = dynlm(Y.t ~ +rain+L(Y.t , k = 1 ) + S.t + S.t.1 + 
+                   trend(Y.t) )
+summary(model6.rain)
+model6.rad = dynlm(Y.t ~ +rad+L(Y.t , k = 1 ) + S.t + S.t.1 + 
+                   trend(Y.t) )
+summary(model6.rad)
+model6.RH = dynlm(Y.t ~ +hum+L(Y.t , k = 1 ) + S.t + S.t.1 + 
+                   trend(Y.t) )
+summary(model6.RH)
+
+```
+
+
+We will also attempt to fit model in the for loop below with dynamic number of lags of Y.t based on model6.rad, and plot how MASE is influenced as each lag of Y.t is added to the model, starting with more recent to those further back in time (Meys, 2011). We do not fit trend as it was found insignificant.
+
+Form Fig.15, we observed an overall decreasing trend on MASE values as more lags of Y.t are added to the model. Due to the pleteau after lag 4 we decided to keep up to the 4 th lag of Y.t to avoid overfitting and overcomplicating the model.
+
+```{r}
+#formula for dynamic number of variables extracted from stackoverflow  https://stackoverflow.com/questions/4951442/formula-with-dynamic-number-of-variables
+
+MASE = numeric(12)
+for (i in 1:12){
+  formula <- as.formula(paste("Y.t ~", paste("L(Y.t, k=", 1:i, ")", collapse=" + "),
+                              " +S.t + S.t.1 + rad"))
+  model = dynlm(formula)
+  predicted_value = fitted(model)
+  MASE[i] = mase(rbo, predicted_value, step_size = 1)
+}
+
+MASE.dynlm <- data.frame(lags = 1:12, MASE = MASE)
+
+# Plot MASE values against lags
+ggplot(MASE.dynlm, aes(x=lags, y=MASE)) +
+  geom_line() +
+  geom_point() +
+  labs(title="Fig. 15 MASE values for increasing lags on Y.t",
+       x="Lags",
+       y="MASE") 
+
+```
+The modified model6.rad1 achieved R^6 of 0.68. Diagnostic check shows no serial correlation left in residuals, as confirmed by ACF plot and BG test. The model seems to capture key features in the data moderately well.
+
+```{r}
+model6.rad1 = dynlm(Y.t ~ +rad+L(Y.t , k = 1 ) +L(Y.t , k = 2 )+ L(Y.t , k = 3 )
+                    +L(Y.t , k = 4 )+S.t + S.t.1 
+                )
+summary(model6.rad1)
+checkresiduals(model6.rad1)
+```
+
+We now calculate AIC, BIC and MASE for this model. As shown below, model6.rad1 has AIC=-115.87, BIC=-104.21, MASE=0.419.
+
+```{r}
+# Extract AIC and BIC from models
+
+aicbic <-c(AIC(model6.rad1), BIC(model6.rad1))
+# list MASE from models
+predicted_value4 = fitted(model6.rad1)
+mase <- round(mase(rbo, predicted_value4, step_size = 1),3)
+aicbic
+mase
+```
+## Task 3b Forecast 
+
+We not forecast 3 years ahead of rbo using model6.rad1, fitted with rad, 1 to 4th lags of Y.t, step function and first lag of step function to address drought intervention in 1996 on rbo. We omit the first 4 values in rbo as we used up to lag 4 of Y.t(rbo) to fit model6.rad1
+
+```{r}
+
+q = 3
+n = nrow(model6.rad1$model)
+rbo.frc = array(NA , (n + q))
+rbo.frc[1:n] = rbo[5:length(rbo)] 
+
+for (i in 1:q) {
+  data.new = c(1,1, rbo.frc[n+i-1], rbo.frc[n+i-2], rbo.frc[n+i-3], rbo.frc[n+i-4],1,1)
+  rbo.frc[n+i] = as.vector(model6.rad1$coefficients) %*% data.new
+ 
+}
+
+pointforecastrbo<-rbo.frc[(n+1):(n+q)]
+pointforecastrbo.ts = ts(pointforecastrbo, start = 2015, frequency=1)
+
+autoplot(rbo, ylab='RBO',xlab='Year', 
+main = "Fig. 16 Predicted rbo values using model6.rbo1 to address intervention") + 
+  autolayer(pointforecastrbo.ts)
+
+```
+
+
+# Task 3 conclusion
+
+In conclusion, the optimal model found from task 3b performs better than the optimal model from task 3a, in terms of AIC, BIC, MASE and R^2, so model performs better when we take the intervention of drought into consideration.
+
+*References*
+
+Meys. J (2011) Answer: Formula with dynamic number of variables. https://stackoverflow.com/questions/4951442/formula-with-dynamic-number-of-variables
+
+This assignment also utilized code and comments from previous assignments, lecture notes, module notes and module html from week 1 to 9.
